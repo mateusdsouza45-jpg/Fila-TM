@@ -579,15 +579,15 @@ def main():
         col_a, col_b = st.columns(2)
         with col_a:
             if st.button("➡️ Iniciar Fila RJ", use_container_width=True):
-                st.session_state.filial = "RJ"
                 reset_state_preserve_filial()
+                st.session_state.filial = "RJ"
                 if st.session_state.mode_shared:
                     load_from_shared("RJ")
                 st.rerun()
         with col_b:
             if st.button("➡️ Iniciar Fila SJP", use_container_width=True):
-                st.session_state.filial = "SJP"
                 reset_state_preserve_filial()
+                st.session_state.filial = "SJP"
                 if st.session_state.mode_shared:
                     load_from_shared("SJP")
                 st.rerun()
