@@ -1,4 +1,4 @@
-import os,re,json,tempfile
+import os,re,json,tempfile,hashlib,secrets
 from datetime import datetime
 from io import BytesIO
 import streamlit as st
@@ -27,6 +27,28 @@ def _safe_path(fn:str)->str:
         return os.path.join(tempfile.gettempdir(),fn)
 
 HISTORY_PATH=_safe_path("history.json")
+USERS_PATH=_safe_path("users.json")
+
+def _hash_password(password:str, salt_hex:str|None=None)->dict:
+    if salt_hex is None:
+        salt=os.urandom(16); salt_hex=salt.hex()
+    else:
+        salt=bytes.fromhex(salt_hex)
+    dk=hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 150000)
+    return {"salt": salt_hex, "hash": dk.hex()}
+
+def _verify_password(password:str, stored:dict)->bool:
+    if not stored or "salt" not in stored or "hash" not in stored: return False
+    calc=_hash_password(password, stored["salt"])
+    return secrets.compare_digest(calc["hash"], stored["hash"])
+
+def _users_load()->dict:
+    return _load_json(USERS_PATH, {"users":{}})
+
+def _users_save(db:dict)->None:
+    _atomic_write_json(USERS_PATH, db)
+
+
 SHARED_STATE_PATH=_safe_path("shared_state.json")
 
 def _load_json(path,default):
@@ -95,54 +117,38 @@ def load_from_shared(filial:str):
     st.session_state.registro_pegaram_carga=state.get("registro_pegaram_carga",[])
     st.session_state.registro_excluidas=state.get("registro_excluidas",[])
 
-def require_login():
+def require_login()->str:
     st.sidebar.markdown("## 🔐 Acesso")
-
-    # 1️⃣ tenta Secrets do Streamlit Cloud
-    users = st.secrets.get("users", None)
-    single_pw = st.secrets.get("APP_PASSWORD", None)
-
-    # 2️⃣ fallback para variáveis de ambiente (Codespaces / local)
-    if not users and not single_pw:
-        env_pw = os.environ.get("APP_PASSWORD")
-        env_users = os.environ.get("USERS_JSON")
-
-        if env_users:
-            import json
-            users = json.loads(env_users)
-        elif env_pw:
-            single_pw = env_pw
-
     if st.session_state.get("auth_user"):
-        u = st.session_state["auth_user"]
+        u=st.session_state["auth_user"]
         st.sidebar.success(f"Logado: {u}")
         if st.sidebar.button("Sair"):
-            st.session_state.clear()
+            for k in list(st.session_state.keys()):
+                if k.startswith("auth_"): del st.session_state[k]
             st.rerun()
         return u
 
+    users=st.secrets.get("users",None)
+    single_pw=st.secrets.get("APP_PASSWORD",None)
     if not users and not single_pw:
-        st.warning("Senha não configurada (Secrets ou variáveis de ambiente).")
+        st.warning("Configure Secrets: APP_PASSWORD=\"1234\" ou [users]\\nadmin=\"1234\"")
         st.stop()
 
-    username = st.sidebar.text_input("Usuário")
-    password = st.sidebar.text_input("Senha", type="password")
-
+    username=st.sidebar.text_input("Usuário",value="",placeholder="ex: admin")
+    password=st.sidebar.text_input("Senha",type="password",value="",placeholder="••••••••")
     if st.sidebar.button("Entrar"):
-        ok = False
-        u = username or "usuario"
-
+        u=username.strip() or "usuario"
+        ok=False
         if users:
-            ok = u in users and users[u] == password
+            ok=(u in users and str(users[u])==str(password))
         else:
-            ok = password == single_pw
-
+            ok=(str(password)==str(single_pw))
+            if ok and not username.strip(): u="usuario"
         if ok:
-            st.session_state["auth_user"] = u
+            st.session_state["auth_user"]=u
             st.rerun()
         else:
-            st.sidebar.error("Usuário ou senha inválidos")
-
+            st.sidebar.error("Usuário/senha inválidos.")
     st.stop()
 
 FROTAS_VALIDAS={203,205,207,208,211,212,215,218,219,222,223,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,267,301,302,303,304,305,306,307,308,309,310,311,312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,401,402,403,404,405,406,407,408,409,410,411,412,413,414,415,416,417,418,419,420,421,422,423,424,425,426,427,428,429,430,431,432,433,434,435,436,437,438,439,440,451,452,453,454,455,456,457,458,459,460,461,462,463,464,466,467,468,469,470}
