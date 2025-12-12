@@ -37,7 +37,11 @@ def _safe_path(filename: str) -> str:
         return os.path.join(tempfile.gettempdir(), filename)
 
 USERS_PATH = _safe_path("users.json")
-HISTORY_PATH = _safe_path("history.json")
+HISTORY_PATH = _safe_path("history.json")  # legado (não usado)
+def _history_path_for_user(username: str) -> str:
+    u = re.sub(r"[^a-zA-Z0-9_.-]", "_", (username or "anon"))
+    return _safe_path(f"history_{u}.json")
+
 SHARED_STATE_PATH = _safe_path("shared_state.json")
 
 def _load_json(path: str, default):
@@ -78,6 +82,8 @@ def _users_load() -> dict:
 
 def _users_save(data: dict) -> None:
     _atomic_write_json(USERS_PATH, data)
+
+ADMIN_USERS = {"admin"}  # coloque aqui usuários que podem ver histórico de todos
 
 def auth_screen() -> str:
     st.markdown(CSS, unsafe_allow_html=True)
@@ -138,23 +144,43 @@ def auth_screen() -> str:
 # --------------------------- HISTÓRICO ---------------------------
 
 def history_append(event: dict):
-    data = _load_json(HISTORY_PATH, {"events": []})
+    """Salva histórico por usuário (privado)."""
+    username = (event.get("user") or "anon")
+    path = _history_path_for_user(username)
+    data = _load_json(path, {"events": []})
     data["events"].append(event)
     data["events"] = data["events"][-5000:]
-    _atomic_write_json(HISTORY_PATH, data)
+    _atomic_write_json(path, data)
 
-def history_df(user: str | None = None, filial: str | None = None) -> pd.DataFrame:
-    data = _load_json(HISTORY_PATH, {"events": []})
-    rows = data.get("events", [])
-    if user:
-        rows = [r for r in rows if r.get("user") == user]
+def history_df(requesting_user: str, filial: str | None = None, include_all: bool = False) -> pd.DataFrame:
+    """Carrega histórico.
+    - Por padrão: somente do usuário logado.
+    - Se include_all=True (admin): tenta juntar todos os arquivos history_*.json que existirem.
+    """
+    rows = []
+    if include_all:
+        base_dir = os.path.dirname(_history_path_for_user(requesting_user))
+        try:
+            for fn in os.listdir(base_dir):
+                if fn.startswith('history_') and fn.endswith('.json'):
+                    d = _load_json(os.path.join(base_dir, fn), {"events": []})
+                    rows.extend(d.get('events', []))
+        except Exception:
+            d = _load_json(_history_path_for_user(requesting_user), {"events": []})
+            rows = d.get('events', [])
+    else:
+        d = _load_json(_history_path_for_user(requesting_user), {"events": []})
+        rows = d.get('events', [])
+
     if filial:
-        rows = [r for r in rows if r.get("filial") == filial]
+        rows = [r for r in rows if r.get('filial') == filial]
+
     if not rows:
         return pd.DataFrame(columns=["ts", "user", "filial", "action", "detail"])
+
     df = pd.DataFrame(rows)
-    if "ts" in df.columns:
-        df = df.sort_values("ts", ascending=False)
+    if 'ts' in df.columns:
+        df = df.sort_values('ts', ascending=False)
     return df[["ts", "user", "filial", "action", "detail"]]
 
 # --------------------------- MULTIUSUÁRIO (fila compartilhada local) ---------------------------
@@ -754,18 +780,25 @@ def main():
 
     with tab_hist:
         st.subheader("Histórico (ações)")
+        is_admin = user in ADMIN_USERS
         c1, c2 = st.columns(2)
         with c1:
-            filtro_user = st.selectbox("Usuário", ["Todos", user], index=1)
-        with c2:
             filtro_filial = st.selectbox("Filial", ["Todas", "RJ", "SJP"], index=0)
+        with c2:
+            ver_todos = st.toggle("Ver histórico de todos (admin)", value=False, disabled=not is_admin)
 
         dfh = history_df(
-            user=None if filtro_user == "Todos" else user,
-            filial=None if filtro_filial == "Todas" else filtro_filial
+            requesting_user=user,
+            filial=None if filtro_filial == "Todas" else filtro_filial,
+            include_all=(is_admin and ver_todos),
         )
         st.dataframe(dfh, hide_index=True, use_container_width=True)
-        st.download_button("Baixar histórico (CSV)", data=dfh.to_csv(index=False).encode("utf-8"), file_name="historico.csv", mime="text/csv")
+        st.download_button(
+            "Baixar histórico (CSV)",
+            data=dfh.to_csv(index=False).encode("utf-8"),
+            file_name="historico.csv",
+            mime="text/csv",
+        )
 
 if __name__ == "__main__":
     main()
