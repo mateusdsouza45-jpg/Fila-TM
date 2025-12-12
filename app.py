@@ -59,6 +59,103 @@ def _atomic_write_json(path: str, obj):
         json.dump(obj, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
 
+
+# --------------------------- SESSÕES (1 login por usuário) + LOG ADMIN ---------------------------
+
+SESSIONS_PATH = _safe_path("sessions.json")
+ADMIN_LOG_PATH = _safe_path("admin_log.json")
+SESSION_TIMEOUT_MIN = 5  # libera sozinho após 5 min sem atividade
+
+def _now_ts() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def _minutes_diff(ts_str: str) -> float:
+    try:
+        dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        return (datetime.now() - dt).total_seconds() / 60.0
+    except Exception:
+        return 9999.0
+
+def _sessions_load() -> dict:
+    return _load_json(SESSIONS_PATH, {"locks": {}})
+
+def _sessions_save(data: dict) -> None:
+    _atomic_write_json(SESSIONS_PATH, data)
+
+def _sessions_cleanup(locks: dict) -> dict:
+    for u in list(locks.keys()):
+        if _minutes_diff((locks.get(u) or {}).get("last_seen", "")) > SESSION_TIMEOUT_MIN:
+            locks.pop(u, None)
+    return locks
+
+def get_session_id() -> str:
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = secrets.token_hex(16)
+    return st.session_state.session_id
+
+def lock_user(username: str, session_id: str) -> tuple[bool, str]:
+    """Trava: só 1 sessão ativa por usuário."""
+    data = _sessions_load()
+    locks = _sessions_cleanup(data.get("locks", {}))
+
+    rec = locks.get(username)
+    if rec and rec.get("session_id") != session_id:
+        return False, "Usuário já está conectado em outro dispositivo. Tente novamente em alguns minutos."
+
+    locks[username] = {"session_id": session_id, "last_seen": _now_ts()}
+    data["locks"] = locks
+    _sessions_save(data)
+    return True, ""
+
+def touch_lock(username: str, session_id: str) -> None:
+    data = _sessions_load()
+    locks = _sessions_cleanup(data.get("locks", {}))
+    rec = locks.get(username)
+    if rec and rec.get("session_id") == session_id:
+        rec["last_seen"] = _now_ts()
+        locks[username] = rec
+        data["locks"] = locks
+        _sessions_save(data)
+
+def unlock_user(username: str, session_id: str) -> None:
+    data = _sessions_load()
+    locks = data.get("locks", {})
+    rec = locks.get(username)
+    if rec and rec.get("session_id") == session_id:
+        locks.pop(username, None)
+        data["locks"] = locks
+        _sessions_save(data)
+
+def online_users_df() -> pd.DataFrame:
+    data = _sessions_load()
+    locks = _sessions_cleanup(data.get("locks", {}))
+    rows = []
+    for u, rec in locks.items():
+        last_seen = rec.get("last_seen", "")
+        mins = _minutes_diff(last_seen)
+        status = "online" if mins <= SESSION_TIMEOUT_MIN else "expirado"
+        rows.append({"usuario": u, "ultima_atividade": last_seen, "status": status})
+    if not rows:
+        return pd.DataFrame(columns=["usuario", "ultima_atividade", "status"])
+    return pd.DataFrame(rows).sort_values(["status", "usuario"])
+
+def admin_log_append(actor: str, action: str, detail: str = "") -> None:
+    data = _load_json(ADMIN_LOG_PATH, {"events": []})
+    data["events"].append({"ts": _now_ts(), "actor": actor, "action": action, "detail": detail})
+    data["events"] = data["events"][-5000:]
+    _atomic_write_json(ADMIN_LOG_PATH, data)
+
+def admin_force_logout(actor: str, target_user: str) -> bool:
+    data = _sessions_load()
+    locks = _sessions_cleanup(data.get("locks", {}))
+    if target_user in locks:
+        locks.pop(target_user, None)
+        data["locks"] = locks
+        _sessions_save(data)
+        admin_log_append(actor, "force_logout", target_user)
+        return True
+    return False
+
 # --------------------------- AUTH LOCAL ---------------------------
 
 def _hash_password(password: str, salt_hex: str | None = None) -> dict:
@@ -98,7 +195,7 @@ def ensure_admin_user():
 ADMIN_USERS = {"mateus.s"}  # usuários admin fixos
 
 def auth_screen() -> str:
-    """Tela inicial: somente LOGIN. Criação de usuários é feita pelo admin."""
+    """Tela inicial: somente LOGIN (1 sessão por usuário). Criação de usuários é feita pelo admin."""
     st.markdown(CSS, unsafe_allow_html=True)
     st.title("🔐 Acesso")
     st.markdown('<div class="small-muted">Entre com seu usuário e senha</div>', unsafe_allow_html=True)
@@ -112,18 +209,30 @@ def auth_screen() -> str:
 
     u = st.text_input("Usuário", key="login_user")
     p = st.text_input("Senha", type="password", key="login_pass")
+
     if st.button("Entrar", type="primary"):
         u = (u or "").strip().lower()
         if not u or not p:
             st.warning("Preencha usuário e senha.")
-        elif u not in users:
+            st.stop()
+
+        if u not in users:
             st.error("Usuário não encontrado.")
-        elif not _verify_password(p, users[u]):
+            st.stop()
+
+        if not _verify_password(p, users[u]):
             st.error("Senha incorreta.")
-        else:
-            st.session_state["auth_user"] = u
-            st.success("Login ok!")
-            st.rerun()
+            st.stop()
+
+        sid = get_session_id()
+        ok, msg = lock_user(u, sid)
+        if not ok:
+            st.error(msg)
+            st.stop()
+
+        st.session_state["auth_user"] = u
+        st.success("Login ok!")
+        st.rerun()
 
     st.stop()
 
@@ -576,9 +685,12 @@ def main():
 
     user = auth_screen()
 
+    touch_lock(user, get_session_id())
+
     st.sidebar.markdown("## 👤 Sessão")
     st.sidebar.write(f"Usuário: **{user}**")
     if st.sidebar.button("Sair"):
+        unlock_user(user, get_session_id())
         st.session_state.pop("auth_user", None)
         st.rerun()
 
@@ -617,9 +729,14 @@ def main():
 
     st.markdown(f"### Filial selecionada: **{filial}**")
 
-    tab_arquivo, tab_select, tab_ops, tab_hist, tab_users = st.tabs(
-        ["📄 Arquivo", "🧾 Selecionar & Montar", "✔ Gestão & Relatório", "🕓 Histórico", "👥 Usuários"]
-    )
+    tabs = ["📄 Arquivo", "🧾 Selecionar & Montar", "✔ Gestão & Relatório", "🕓 Histórico"]
+    is_admin = user in ADMIN_USERS
+    if is_admin:
+        tabs.append("👥 Usuários")
+
+    tab_list = st.tabs(tabs)
+    tab_arquivo, tab_select, tab_ops, tab_hist = tab_list[:4]
+    tab_users = tab_list[4] if is_admin else None
 
     with tab_arquivo:
         st.subheader("Leitura do PDF")
@@ -790,66 +907,117 @@ def main():
 
 
 
-    with tab_users:
-        st.subheader("👥 Gestão de usuários")
-        is_admin = user in ADMIN_USERS
-        if not is_admin:
-            st.warning("Somente o administrador pode gerenciar usuários.")
-            st.stop()
+    if tab_users is not None:
+        with tab_users:
+            st.subheader("👥 Gestão de usuários (Admin)")
 
-        db = _users_load()
-        users_map = (db.get("users", {}) or {})
-        users_list = sorted(list(users_map.keys()))
+            db = _users_load()
+            users_map = (db.get("users", {}) or {})
+            users_list = sorted(list(users_map.keys()))
 
-        st.markdown("### Criar novo usuário")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            new_user = st.text_input("Novo usuário", key="new_user").strip().lower()
-        with c2:
-            new_pass = st.text_input("Senha", type="password", key="new_pass")
-        with c3:
-            new_pass2 = st.text_input("Confirmar senha", type="password", key="new_pass2")
+            st.markdown("### ✅ Criar novo usuário")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                new_user = st.text_input("Novo usuário", key="new_user").strip().lower()
+            with c2:
+                new_pass = st.text_input("Senha", type="password", key="new_pass")
+            with c3:
+                new_pass2 = st.text_input("Confirmar senha", type="password", key="new_pass2")
 
-        if st.button("Criar usuário", type="primary"):
-            if not new_user or not new_pass or not new_pass2:
-                st.warning("Preencha usuário e senha.")
-            elif len(new_user) < 3:
-                st.warning("Usuário muito curto.")
-            elif new_user in users_map:
-                st.error("Esse usuário já existe.")
-            elif new_pass != new_pass2:
-                st.error("As senhas não conferem.")
-            elif len(new_pass) < 4:
-                st.warning("Senha muito curta (mínimo 4).")
+            if st.button("Criar usuário", type="primary"):
+                if not new_user or not new_pass or not new_pass2:
+                    st.warning("Preencha usuário e senha.")
+                elif len(new_user) < 3:
+                    st.warning("Usuário muito curto.")
+                elif new_user in users_map:
+                    st.error("Esse usuário já existe.")
+                elif new_pass != new_pass2:
+                    st.error("As senhas não conferem.")
+                elif len(new_pass) < 4:
+                    st.warning("Senha muito curta (mínimo 4).")
+                else:
+                    users_map[new_user] = _hash_password(new_pass)
+                    db["users"] = users_map
+                    _users_save(db)
+                    admin_log_append(user, "create_user", f"criou {new_user}")
+                    st.success(f"Usuário '{new_user}' criado.")
+                    st.rerun()
+
+            st.markdown("---")
+            st.markdown("### 🔑 Resetar senha")
+            if users_list:
+                target = st.selectbox("Usuário", users_list, key="reset_user")
+                rp1 = st.text_input("Nova senha", type="password", key="reset_p1")
+                rp2 = st.text_input("Confirmar nova senha", type="password", key="reset_p2")
+                if st.button("Resetar senha", key="btn_reset"):
+                    if not rp1 or not rp2:
+                        st.warning("Preencha a nova senha.")
+                    elif rp1 != rp2:
+                        st.error("As senhas não conferem.")
+                    elif len(rp1) < 4:
+                        st.warning("Senha muito curta (mínimo 4).")
+                    else:
+                        users_map[target] = _hash_password(rp1)
+                        db["users"] = users_map
+                        _users_save(db)
+                        admin_log_append(user, "reset_password", f"resetou senha de {target}")
+                        st.success(f"Senha de '{target}' resetada.")
+                        st.rerun()
             else:
-                users_map[new_user] = _hash_password(new_pass)
-                db["users"] = users_map
-                _users_save(db)
-                st.success(f"Usuário '{new_user}' criado.")
-                st.rerun()
+                st.info("Nenhum usuário cadastrado ainda.")
 
-        st.markdown("---")
-        st.markdown("### Usuários cadastrados")
-        safe_users = [u for u in users_list if u != "mateus.s"]
+            st.markdown("---")
+            st.markdown("### ❌ Excluir usuário")
+            safe_users = [u for u in users_list if u != "mateus.s"]
+            del_user = st.selectbox("Selecione um usuário", ["(nenhum)"] + safe_users, key="del_user")
+            if st.button("Excluir usuário", key="btn_del"):
+                if del_user == "(nenhum)":
+                    st.info("Selecione um usuário.")
+                elif del_user not in users_map:
+                    st.error("Usuário não encontrado.")
+                else:
+                    users_map.pop(del_user, None)
+                    db["users"] = users_map
+                    _users_save(db)
+                    admin_log_append(user, "delete_user", f"excluiu {del_user}")
+                    st.success(f"Usuário '{del_user}' excluído.")
+                    st.rerun()
 
-        st.write(f"Total: **{len(users_list)}**")
-        st.dataframe(pd.DataFrame({"usuario": users_list}), hide_index=True, use_container_width=True)
+            st.markdown("---")
+            st.markdown("### 🟢 Usuários online")
+            df_on = online_users_df()
+            st.dataframe(df_on, hide_index=True, use_container_width=True)
 
-        st.markdown("### Excluir usuário (opcional)")
-        del_user = st.selectbox("Selecione um usuário para excluir", ["(nenhum)"] + safe_users)
-        if st.button("Excluir usuário"):
-            if del_user == "(nenhum)":
-                st.info("Selecione um usuário.")
-            elif del_user not in users_map:
-                st.error("Usuário não encontrado.")
-            else:
-                users_map.pop(del_user, None)
-                db["users"] = users_map
-                _users_save(db)
-                st.success(f"Usuário '{del_user}' excluído.")
-                st.rerun()
+            st.markdown("### 🚫 Derrubar sessão")
+            online_list = df_on["usuario"].tolist() if not df_on.empty else []
+            target_online = st.selectbox("Usuário online", ["(nenhum)"] + online_list, key="force_user")
+            if st.button("Derrubar sessão", key="btn_force"):
+                if target_online == "(nenhum)":
+                    st.info("Selecione um usuário online.")
+                else:
+                    ok = admin_force_logout(user, target_online)
+                    if ok:
+                        st.success(f"Sessão de '{target_online}' derrubada.")
+                        st.rerun()
+                    else:
+                        st.info("Nenhuma sessão ativa encontrada.")
 
-        st.caption("⚠️ As senhas não são exibidas (ficam armazenadas apenas como hash).")
+            st.markdown("---")
+            st.markdown("### 🧾 Log do Admin (quem criou/resetou/excluiu/derrubou)")
+            log = _load_json(ADMIN_LOG_PATH, {"events": []}).get("events", [])
+            df_log = pd.DataFrame(log) if log else pd.DataFrame(columns=["ts","actor","action","detail"])
+            if not df_log.empty:
+                df_log = df_log.sort_values("ts", ascending=False)
+            st.dataframe(df_log, hide_index=True, use_container_width=True)
+            st.download_button(
+                "Baixar log admin (CSV)",
+                data=df_log.to_csv(index=False).encode("utf-8"),
+                file_name="admin_log.csv",
+                mime="text/csv",
+            )
+
+            st.caption("⚠️ As senhas não são exibidas (ficam armazenadas apenas como hash).")
+
 
 if __name__ == "__main__":
     main()
