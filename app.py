@@ -83,7 +83,19 @@ def _users_load() -> dict:
 def _users_save(data: dict) -> None:
     _atomic_write_json(USERS_PATH, data)
 
-ADMIN_USERS = {"admin"}  # coloque aqui usuários que podem ver histórico de todos
+
+def ensure_admin_user():
+    """Garante que o usuário admin exista (mesmo se não tiver cadastro)."""
+    ADMIN_USERNAME = "mateus.s"
+    ADMIN_PASSWORD = "110824"  # troque se quiser
+    db = _users_load()
+    users = db.get("users", {})
+    if ADMIN_USERNAME not in users:
+        users[ADMIN_USERNAME] = _hash_password(ADMIN_PASSWORD)
+        db["users"] = users
+        _users_save(db)
+
+ADMIN_USERS = {"mateus.s"}  # usuários admin fixos
 
 def auth_screen() -> str:
     st.markdown(CSS, unsafe_allow_html=True)
@@ -586,6 +598,8 @@ def main():
     if "orders" not in st.session_state:
         reset_state_preserve_filial()
 
+    ensure_admin_user()
+
     user = auth_screen()
 
     st.sidebar.markdown("## 👤 Sessão")
@@ -629,8 +643,8 @@ def main():
 
     st.markdown(f"### Filial selecionada: **{filial}**")
 
-    tab_arquivo, tab_select, tab_ops, tab_hist = st.tabs(
-        ["📄 Arquivo", "🧾 Selecionar & Montar", "✔ Gestão & Relatório", "🕓 Histórico"]
+    tab_arquivo, tab_select, tab_ops, tab_hist, tab_users = st.tabs(
+        ["📄 Arquivo", "🧾 Selecionar & Montar", "✔ Gestão & Relatório", "🕓 Histórico", "👥 Usuários"]
     )
 
     with tab_arquivo:
@@ -799,6 +813,25 @@ def main():
             file_name="historico.csv",
             mime="text/csv",
         )
+
+
+
+    with tab_users:
+        st.subheader("Usuários cadastrados")
+        is_admin = user in ADMIN_USERS
+        if not is_admin:
+            st.warning("Somente o administrador pode ver a lista de usuários.")
+            st.stop()
+
+        db = _users_load()
+        users = sorted(list((db.get("users", {}) or {}).keys()))
+        if not users:
+            st.info("Nenhum usuário cadastrado ainda.")
+        else:
+            st.write(f"Total: **{len(users)}**")
+            st.dataframe(pd.DataFrame({"usuario": users}), hide_index=True, use_container_width=True)
+
+        st.caption("⚠️ As senhas não são exibidas (ficam armazenadas apenas como hash).")
 
 if __name__ == "__main__":
     main()
