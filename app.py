@@ -18,10 +18,77 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 
 CSS = """
 <style>
-.block-container { padding-top: 1.0rem; }
+:root{
+  --bg:#0b1220;
+  --card:#0f1a2f;
+  --card2:#0b1730;
+  --text:#e5e7eb;
+  --muted:#9ca3af;
+  --border:rgba(255,255,255,.10);
+  --shadow: 0 10px 25px rgba(0,0,0,.25);
+  --radius: 18px;
+  --gap: 12px;
+
+  --super:#ef4444;  /* red */
+  --longa:#f59e0b;  /* amber */
+  --media:#3b82f6;  /* blue */
+  --curta:#10b981;  /* green */
+}
+
+.block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; }
 h1, h2, h3 { letter-spacing: -0.02em; }
-.small-muted { color: #6b7280; font-size: 0.9rem; }
-.stButton>button { border-radius: 12px; }
+.small-muted { color: var(--muted); font-size: 0.95rem; margin-top: -6px; }
+
+div[data-testid="stSidebar"] > div:first-child{
+  background: linear-gradient(180deg, rgba(15,26,47,.95), rgba(11,18,32,.95));
+  border-right: 1px solid var(--border);
+}
+
+.stButton>button { border-radius: 14px; padding: .65rem 1rem; }
+.stDownloadButton>button{ border-radius: 14px; }
+
+.card{
+  background: linear-gradient(180deg, rgba(15,26,47,.95), rgba(11,23,48,.95));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 14px 10px 14px;
+  box-shadow: var(--shadow);
+  margin-bottom: var(--gap);
+}
+.card-header{
+  display:flex; align-items:center; justify-content:space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.card-title{
+  font-weight: 800;
+  font-size: 1.05rem;
+  color: var(--text);
+  display:flex; align-items:center; gap:10px;
+}
+.badge{
+  font-weight: 800;
+  font-size: .85rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: rgba(255,255,255,.06);
+}
+.dot{ width:10px; height:10px; border-radius:999px; display:inline-block; }
+.dot.super{ background: var(--super); }
+.dot.longa{ background: var(--longa); }
+.dot.media{ background: var(--media); }
+.dot.curta{ background: var(--curta); }
+
+.table-wrap{
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.03);
+}
+
+hr{ border-color: rgba(255,255,255,.08); }
 </style>
 """
 
@@ -543,16 +610,35 @@ def reset_state_preserve_filial():
     for k, v in defaults.items():
         st.session_state[k] = v
 
-def show_queue(label: str, queue_list):
-    st.subheader(label)
+def _queue_card_header(title: str, count: int, dot_class: str):
+    st.markdown(
+        f"""<div class="card">
+  <div class="card-header">
+    <div class="card-title"><span class="dot {dot_class}"></span>{title}</div>
+    <div class="badge">{count} na fila</div>
+  </div>""",
+        unsafe_allow_html=True,
+    )
+
+def _queue_card_footer():
+    st.markdown("</div>", unsafe_allow_html=True)
+
+def show_queue(title: str, queue_list, dot_class: str):
+    _queue_card_header(title, len(queue_list or []), dot_class)
     if not queue_list:
         st.info("Fila vazia.")
+        _queue_card_footer()
         return
+
     data = []
     for idx, f in enumerate(queue_list, start=1):
         destaque = "⭐" if f in st.session_state.frotas_destacadas else ""
-        data.append({"Posição": idx, "Frota": f, "Destaque": destaque})
+        data.append({"Posição": idx, "Frota": f, "★": destaque})
+
+    st.markdown('<div class="table-wrap">', unsafe_allow_html=True)
     st.dataframe(pd.DataFrame(data), hide_index=True, use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    _queue_card_footer()
 
 def rebuild_queues(filial: str, normalized: list[str]):
     if filial == "RJ":
@@ -694,8 +780,8 @@ def main():
         st.session_state.pop("auth_user", None)
         st.rerun()
 
-    st.title("🚛 Gerenciador de Filas – Versão Web")
-    st.markdown('<div class="small-muted">RJ e SJP • login/cadastro local • histórico • multiusuário</div>', unsafe_allow_html=True)
+    st.title("🚛 Gerenciador de Filas")
+    st.markdown('<div class="small-muted">RJ e SJP • acesso controlado • histórico por usuário • operação em tempo real</div>', unsafe_allow_html=True)
 
     st.sidebar.markdown("## 👥 Multiusuário")
     st.session_state.mode_shared = st.sidebar.toggle("Fila compartilhada por filial", value=st.session_state.get("mode_shared", True))
@@ -823,14 +909,21 @@ def main():
             st.success("Frotas destacadas atualizadas.")
 
         st.markdown("---")
+        st.subheader("Resumo rápido")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Super Longa", len(st.session_state.queue_super_longa))
+        m2.metric("Longa", len(st.session_state.queue_longa))
+        m3.metric("Média", len(st.session_state.queue_media))
+        m4.metric("Curta", len(st.session_state.queue_curta))
+
         st.subheader("Visualização das Filas")
         col1, col2 = st.columns(2)
         with col1:
-            show_queue("1 - SUPER LONGA", st.session_state.queue_super_longa)
-            show_queue("2 - LONGA", st.session_state.queue_longa)
+            show_queue("1 - SUPER LONGA", st.session_state.queue_super_longa, "super")
+            show_queue("2 - LONGA", st.session_state.queue_longa, "longa")
         with col2:
-            show_queue("3 - MÉDIA", st.session_state.queue_media)
-            show_queue("4 - CURTA", st.session_state.queue_curta)
+            show_queue("3 - MÉDIA", st.session_state.queue_media, "media")
+            show_queue("4 - CURTA", st.session_state.queue_curta, "curta")
 
     with tab_ops:
         st.subheader("Gestão das Filas")
