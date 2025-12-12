@@ -98,9 +98,10 @@ def ensure_admin_user():
 ADMIN_USERS = {"mateus.s"}  # usuários admin fixos
 
 def auth_screen() -> str:
+    """Tela inicial: somente LOGIN. Criação de usuários é feita pelo admin."""
     st.markdown(CSS, unsafe_allow_html=True)
     st.title("🔐 Acesso")
-    st.markdown('<div class="small-muted">Entrar ou criar conta (cadastro local)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="small-muted">Entre com seu usuário e senha</div>', unsafe_allow_html=True)
     st.info("⚠️ Cadastro local: em hospedagem gratuita ele pode ser perdido se o app reiniciar.")
 
     if st.session_state.get("auth_user"):
@@ -109,47 +110,20 @@ def auth_screen() -> str:
     users_db = _users_load()
     users = users_db.get("users", {})
 
-    tab_login, tab_signup = st.tabs(["Entrar", "Cadastrar-se"])
-
-    with tab_login:
-        u = st.text_input("Usuário", key="login_user")
-        p = st.text_input("Senha", type="password", key="login_pass")
-        if st.button("Entrar", type="primary"):
-            u = (u or "").strip().lower()
-            if not u or not p:
-                st.warning("Preencha usuário e senha.")
-            elif u not in users:
-                st.error("Usuário não encontrado.")
-            elif not _verify_password(p, users[u]):
-                st.error("Senha incorreta.")
-            else:
-                st.session_state["auth_user"] = u
-                st.success("Login ok!")
-                st.rerun()
-
-    with tab_signup:
-        u2 = st.text_input("Criar usuário (ex: nome.sobrenome)", key="signup_user")
-        p2 = st.text_input("Criar senha", type="password", key="signup_pass")
-        p3 = st.text_input("Confirmar senha", type="password", key="signup_pass2")
-        if st.button("Cadastrar", type="primary"):
-            u2 = (u2 or "").strip().lower()
-            if not u2 or not p2 or not p3:
-                st.warning("Preencha todos os campos.")
-            elif len(u2) < 3:
-                st.warning("Usuário muito curto.")
-            elif u2 in users:
-                st.error("Esse usuário já existe.")
-            elif p2 != p3:
-                st.error("As senhas não conferem.")
-            elif len(p2) < 4:
-                st.warning("Senha muito curta (mínimo 4).")
-            else:
-                users[u2] = _hash_password(p2)
-                users_db["users"] = users
-                _users_save(users_db)
-                st.session_state["auth_user"] = u2
-                st.success("Cadastro feito! Você já entrou.")
-                st.rerun()
+    u = st.text_input("Usuário", key="login_user")
+    p = st.text_input("Senha", type="password", key="login_pass")
+    if st.button("Entrar", type="primary"):
+        u = (u or "").strip().lower()
+        if not u or not p:
+            st.warning("Preencha usuário e senha.")
+        elif u not in users:
+            st.error("Usuário não encontrado.")
+        elif not _verify_password(p, users[u]):
+            st.error("Senha incorreta.")
+        else:
+            st.session_state["auth_user"] = u
+            st.success("Login ok!")
+            st.rerun()
 
     st.stop()
 
@@ -817,19 +791,63 @@ def main():
 
 
     with tab_users:
-        st.subheader("Usuários cadastrados")
+        st.subheader("👥 Gestão de usuários")
         is_admin = user in ADMIN_USERS
         if not is_admin:
-            st.warning("Somente o administrador pode ver a lista de usuários.")
+            st.warning("Somente o administrador pode gerenciar usuários.")
             st.stop()
 
         db = _users_load()
-        users = sorted(list((db.get("users", {}) or {}).keys()))
-        if not users:
-            st.info("Nenhum usuário cadastrado ainda.")
-        else:
-            st.write(f"Total: **{len(users)}**")
-            st.dataframe(pd.DataFrame({"usuario": users}), hide_index=True, use_container_width=True)
+        users_map = (db.get("users", {}) or {})
+        users_list = sorted(list(users_map.keys()))
+
+        st.markdown("### Criar novo usuário")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            new_user = st.text_input("Novo usuário", key="new_user").strip().lower()
+        with c2:
+            new_pass = st.text_input("Senha", type="password", key="new_pass")
+        with c3:
+            new_pass2 = st.text_input("Confirmar senha", type="password", key="new_pass2")
+
+        if st.button("Criar usuário", type="primary"):
+            if not new_user or not new_pass or not new_pass2:
+                st.warning("Preencha usuário e senha.")
+            elif len(new_user) < 3:
+                st.warning("Usuário muito curto.")
+            elif new_user in users_map:
+                st.error("Esse usuário já existe.")
+            elif new_pass != new_pass2:
+                st.error("As senhas não conferem.")
+            elif len(new_pass) < 4:
+                st.warning("Senha muito curta (mínimo 4).")
+            else:
+                users_map[new_user] = _hash_password(new_pass)
+                db["users"] = users_map
+                _users_save(db)
+                st.success(f"Usuário '{new_user}' criado.")
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("### Usuários cadastrados")
+        safe_users = [u for u in users_list if u != "mateus.s"]
+
+        st.write(f"Total: **{len(users_list)}**")
+        st.dataframe(pd.DataFrame({"usuario": users_list}), hide_index=True, use_container_width=True)
+
+        st.markdown("### Excluir usuário (opcional)")
+        del_user = st.selectbox("Selecione um usuário para excluir", ["(nenhum)"] + safe_users)
+        if st.button("Excluir usuário"):
+            if del_user == "(nenhum)":
+                st.info("Selecione um usuário.")
+            elif del_user not in users_map:
+                st.error("Usuário não encontrado.")
+            else:
+                users_map.pop(del_user, None)
+                db["users"] = users_map
+                _users_save(db)
+                st.success(f"Usuário '{del_user}' excluído.")
+                st.rerun()
 
         st.caption("⚠️ As senhas não são exibidas (ficam armazenadas apenas como hash).")
 
