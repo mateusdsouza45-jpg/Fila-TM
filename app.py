@@ -582,6 +582,20 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
             pass
     return extract_orders_sjp_from_text(text)
 
+def _build_pdf_pos_map_simple(orders: list[list[str]], mapping: dict) -> dict:
+    """Mapa de posições do PDF por fila. Retorna dict {'super':{'250':21,...}, ...}.
+    Posição é 1-based dentro da própria seção do PDF.
+    mapping usa indices das seções (orders) para cada fila.
+    """
+    pos = {}
+    for k, sec_idx in mapping.items():
+        d = {}
+        if orders and sec_idx < len(orders):
+            for i, f in enumerate(orders[sec_idx], start=1):
+                d[str(f)] = i
+        pos[k] = d
+    return pos
+
 def normalize_fleet_list(raw: str):
     partes = [p.strip() for p in (raw or "").split(",") if p.strip()]
     normalized = []
@@ -623,17 +637,6 @@ def _queue_card_header(title: str, count: int, dot_class: str):
 def _queue_card_footer():
     st.markdown("</div>", unsafe_allow_html=True)
 
-def _build_pdf_pos_map(orders: list[list[str]], mapping: dict) -> dict:
-    """Mapa de posições do PDF por fila (posição 1-based dentro da própria seção)."""
-    pos = {}
-    for key, sec_idx in mapping.items():
-        d = {}
-        if orders and sec_idx < len(orders):
-            for i, f in enumerate(orders[sec_idx], start=1):
-                d[f] = i
-        pos[key] = d
-    return pos
-
 def show_queue(title: str, queue_list, dot_class: str):
     _queue_card_header(title, len(queue_list or []), dot_class)
     if not queue_list:
@@ -641,42 +644,50 @@ def show_queue(title: str, queue_list, dot_class: str):
         _queue_card_footer()
         return
 
-    key_map = {"super": "super_longa", "longa": "longa", "media": "media", "curta": "curta"}
-    pdf_key = key_map.get(dot_class)
-    pdf_pos = (st.session_state.get("pdf_pos_map") or {}).get(pdf_key, {})
+    pdf_pos = (st.session_state.get("pdf_pos_map") or {}).get(dot_class, {})
 
-    rows = []
+    data = []
     for idx, f in enumerate(queue_list, start=1):
-        destaque = "⭐" if f in st.session_state.frotas_destacadas else ""
-        rows.append({
-            "Posição geral": pdf_pos.get(f, ""),
+        f_str = str(f)
+        destaque = "⭐" if f_str in st.session_state.frotas_destacadas else ""
+        data.append({
+            "Posição geral": pdf_pos.get(f_str, ""),
             "Posição": idx,
-            "Frota": f,
+            "Frota": f_str,
             "★": destaque,
         })
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(data)
 
-    def _style_row(_):
-        # aplica estilos por linha (para todas as colunas)
+    def _hi_row(row):
         styles = []
         for col in df.columns:
             if col == "Posição":
-                styles.append("font-weight:800; font-size:18px; text-align:center; background: rgba(255,255,255,.10);")
+                styles.append("font-weight:900; font-size:18px; text-align:center; background: rgba(255,255,255,.10);")
             elif col == "Posição geral":
-                styles.append("color: rgba(229,231,235,.75); text-align:center;")
+                styles.append("color: rgba(229,231,235,.70); text-align:center;")
             elif col == "★":
                 styles.append("text-align:center;")
             else:
                 styles.append("")
         return styles
 
-    sty = df.style.apply(_style_row, axis=1).set_table_styles(
+    sty = df.style.apply(_hi_row, axis=1).set_table_styles(
         [{"selector": "th", "props": [("font-weight", "800")]}]
     )
 
     st.markdown('<div class="table-wrap">', unsafe_allow_html=True)
     st.dataframe(sty, hide_index=True, use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    _queue_card_footer()
+
+    data = []
+    for idx, f in enumerate(queue_list, start=1):
+        destaque = "⭐" if f in st.session_state.frotas_destacadas else ""
+        data.append({"Posição": idx, "Frota": f, "★": destaque})
+
+    st.markdown('<div class="table-wrap">', unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame(data), hide_index=True, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
     _queue_card_footer()
 
@@ -960,9 +971,9 @@ def main():
         col1, col2 = st.columns(2)
         with col1:
             show_queue("1 - SUPER LONGA", st.session_state.queue_super_longa, "super")
-            show_queue("2 - LONGA", st.session_state.queue_longa, "longa")
-        with col2:
             show_queue("3 - MÉDIA", st.session_state.queue_media, "media")
+        with col2:
+            show_queue("2 - LONGA", st.session_state.queue_longa, "longa")
             show_queue("4 - CURTA", st.session_state.queue_curta, "curta")
 
     with tab_ops:
