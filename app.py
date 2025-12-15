@@ -8,7 +8,6 @@ from datetime import datetime
 from io import BytesIO
 
 import streamlit as st
-import extra_streamlit_components as stx
 import pandas as pd
 from pdfminer.high_level import extract_text
 
@@ -129,82 +128,6 @@ def _atomic_write_json(path: str, obj):
 
 
 # --------------------------- SESSÕES (1 login por usuário) + LOG ADMIN ---------------------------
-REMEMBER_TOKENS_PATH = _safe_path("remember_tokens.json")
-STATE_DIR = _safe_path("user_state_dir")
-STATE_DIR = _ensure_dir(STATE_DIR)
-REMEMBER_DAYS = 30
-
-def _remember_load() -> dict:
-    return _load_json(REMEMBER_TOKENS_PATH, {"tokens": {}})
-
-def _remember_save(data: dict) -> None:
-    _atomic_write_json(REMEMBER_TOKENS_PATH, data)
-
-def remember_issue_token(username: str) -> str:
-    tok = secrets.token_urlsafe(32)
-    db = _remember_load()
-    db["tokens"][tok] = {"user": username, "issued": _now_ts()}
-    _remember_save(db)
-    return tok
-
-def remember_get_user(tok: str) -> str | None:
-    if not tok:
-        return None
-    db = _remember_load()
-    rec = (db.get("tokens") or {}).get(tok)
-    if not rec:
-        return None
-    try:
-        issued = datetime.strptime(rec.get("issued",""), "%Y-%m-%d %H:%M:%S")
-        if (datetime.now() - issued).days >= REMEMBER_DAYS:
-            db["tokens"].pop(tok, None)
-            _remember_save(db)
-            return None
-    except Exception:
-        return None
-    return rec.get("user")
-
-def remember_revoke_token(tok: str) -> None:
-    if not tok:
-        return
-    db = _remember_load()
-    if tok in (db.get("tokens") or {}):
-        db["tokens"].pop(tok, None)
-        _remember_save(db)
-
-def _state_path(username: str) -> str:
-    safe = re.sub(r"[^a-z0-9._-]+", "_", (username or "").lower())
-    return os.path.join(STATE_DIR, f"state_{safe}.json")
-
-def save_shared_state(username: str) -> None:
-    """Salva o estado do trabalho para ser restaurado e compartilhado (owner/viewers)."""
-    try:
-        payload = {
-            "ts": _now_ts(),
-            "filial": st.session_state.get("filial"),
-            "prev_filial": st.session_state.get("prev_filial"),
-            "orders": st.session_state.get("orders"),
-            "queue_super_longa": st.session_state.get("queue_super_longa"),
-            "queue_longa": st.session_state.get("queue_longa"),
-            "queue_media": st.session_state.get("queue_media"),
-            "queue_curta": st.session_state.get("queue_curta"),
-            "selected_fleets": st.session_state.get("selected_fleets"),
-            "frotas_destacadas": st.session_state.get("frotas_destacadas"),
-            "registro_pegaram_carga": st.session_state.get("registro_pegaram_carga"),
-            "registro_excluidas": st.session_state.get("registro_excluidas"),
-            "pdf_pos_map": st.session_state.get("pdf_pos_map"),
-        }
-        _atomic_write_json(_state_path(username), payload)
-    except Exception:
-        pass
-
-def load_shared_state(username: str) -> dict | None:
-    try:
-        return _load_json(_state_path(username), None)
-    except Exception:
-        return None
-
-
 
 SESSIONS_PATH = _safe_path("sessions.json")
 ADMIN_LOG_PATH = _safe_path("admin_log.json")
@@ -237,50 +160,25 @@ def get_session_id() -> str:
         st.session_state.session_id = secrets.token_hex(16)
     return st.session_state.session_id
 
-def has_write_access() -> bool:
-    return st.session_state.get("user_mode", "owner") == "owner"
-
-def lock_user(username: str, session_id: str) -> tuple[bool, str, str]:
-    """Permite múltiplas conexões:
-    - primeira sessão vira owner (pode editar)
-    - demais viram viewer (somente leitura)
-    Retorna (ok, msg, mode).
-    """
+def lock_user(username: str, session_id: str) -> tuple[bool, str]:
+    """Trava: só 1 sessão ativa por usuário."""
     data = _sessions_load()
     locks = _sessions_cleanup(data.get("locks", {}))
 
     rec = locks.get(username)
-    if not rec:
-        locks[username] = {"owner_session_id": session_id, "last_seen": _now_ts(), "viewers": []}
-        data["locks"] = locks
-        _sessions_save(data)
-        return True, "", "owner"
+    if rec and rec.get("session_id") != session_id:
+        return False, "Usuário já está conectado em outro dispositivo. Tente novamente em alguns minutos."
 
-    # se já existe, entra como viewer (read-only), a não ser que seja o owner
-    if session_id == rec.get("owner_session_id"):
-        rec["last_seen"] = _now_ts()
-        locks[username] = rec
-        data["locks"] = locks
-        _sessions_save(data)
-        return True, "", "owner"
-
-    viewers = rec.get("viewers") or []
-    if session_id not in viewers:
-        viewers.append(session_id)
-    rec["viewers"] = viewers
-    rec["last_seen"] = _now_ts()
-    locks[username] = rec
+    locks[username] = {"session_id": session_id, "last_seen": _now_ts()}
     data["locks"] = locks
     _sessions_save(data)
-    return True, "Você entrou como VISUALIZAÇÃO (somente leitura), pois este usuário já está em uso.", "viewer"
+    return True, ""
 
 def touch_lock(username: str, session_id: str) -> None:
     data = _sessions_load()
     locks = _sessions_cleanup(data.get("locks", {}))
     rec = locks.get(username)
-    if not rec:
-        return
-    if session_id == rec.get("owner_session_id") or session_id in (rec.get("viewers") or []):
+    if rec and rec.get("session_id") == session_id:
         rec["last_seen"] = _now_ts()
         locks[username] = rec
         data["locks"] = locks
@@ -290,19 +188,10 @@ def unlock_user(username: str, session_id: str) -> None:
     data = _sessions_load()
     locks = data.get("locks", {})
     rec = locks.get(username)
-    if not rec:
-        return
-    if session_id == rec.get("owner_session_id"):
-        # owner saiu: libera tudo
+    if rec and rec.get("session_id") == session_id:
         locks.pop(username, None)
-    else:
-        viewers = rec.get("viewers") or []
-        if session_id in viewers:
-            viewers.remove(session_id)
-        rec["viewers"] = viewers
-        locks[username] = rec
-    data["locks"] = locks
-    _sessions_save(data)
+        data["locks"] = locks
+        _sessions_save(data)
 
 def online_users_df() -> pd.DataFrame:
     data = _sessions_load()
@@ -312,10 +201,9 @@ def online_users_df() -> pd.DataFrame:
         last_seen = rec.get("last_seen", "")
         mins = _minutes_diff(last_seen)
         status = "online" if mins <= SESSION_TIMEOUT_MIN else "expirado"
-        viewers = len(rec.get("viewers") or [])
-        rows.append({"usuario": u, "ultima_atividade": last_seen, "status": status, "viewers": viewers})
+        rows.append({"usuario": u, "ultima_atividade": last_seen, "status": status})
     if not rows:
-        return pd.DataFrame(columns=["usuario", "ultima_atividade", "status", "viewers"])
+        return pd.DataFrame(columns=["usuario", "ultima_atividade", "status"])
     return pd.DataFrame(rows).sort_values(["status", "usuario"])
 
 def admin_log_append(actor: str, action: str, detail: str = "") -> None:
@@ -361,52 +249,24 @@ def _users_save(data: dict) -> None:
 
 
 def ensure_admin_user():
-    """Garante que usuários iniciais existam (mesmo se não tiver cadastro)."""
-    # Admin único
+    """Garante que o usuário admin exista (mesmo se não tiver cadastro)."""
     ADMIN_USERNAME = "mateus.s"
     ADMIN_PASSWORD = "110824"  # troque se quiser
-
-    # Usuário inicial comum (mesmo formato de criação do app)
-    SEED_USERNAME = "denis.camargo"
-    SEED_PASSWORD = "112233"
-
     db = _users_load()
     users = db.get("users", {})
-
     if ADMIN_USERNAME not in users:
         users[ADMIN_USERNAME] = _hash_password(ADMIN_PASSWORD)
-
-    if SEED_USERNAME not in users:
-        users[SEED_USERNAME] = _hash_password(SEED_PASSWORD)
-
-    db["users"] = users
-    _users_save(db)
+        db["users"] = users
+        _users_save(db)
 
 ADMIN_USERS = {"mateus.s"}  # usuários admin fixos
 
 def auth_screen() -> str:
-    """Tela inicial: LOGIN com 'manter conectado' (30 dias) e modo owner/viewer."""
+    """Tela inicial: somente LOGIN (1 sessão por usuário). Criação de usuários é feita pelo admin."""
     st.markdown(CSS, unsafe_allow_html=True)
     st.title("🔐 Acesso")
     st.markdown('<div class="small-muted">Entre com seu usuário e senha</div>', unsafe_allow_html=True)
-
-    cookies = stx.CookieManager()
-    tok = cookies.get("remember_token")
-
-    # tenta restaurar login via cookie
-    if not st.session_state.get("auth_user") and tok:
-        u_restore = remember_get_user(tok)
-        if u_restore:
-            sid = get_session_id()
-            ok, msg, mode = lock_user(u_restore, sid)
-            if ok:
-                st.session_state["auth_user"] = u_restore
-                st.session_state["user_mode"] = mode
-                if msg:
-                    st.info(msg)
-                return u_restore
-        else:
-            cookies.delete("remember_token")
+    st.info("⚠️ Cadastro local: em hospedagem gratuita ele pode ser perdido se o app reiniciar.")
 
     if st.session_state.get("auth_user"):
         return st.session_state["auth_user"]
@@ -416,11 +276,9 @@ def auth_screen() -> str:
 
     u = st.text_input("Usuário", key="login_user")
     p = st.text_input("Senha", type="password", key="login_pass")
-    remember = st.checkbox("Manter conectado por 30 dias", value=True)
 
     if st.button("Entrar", type="primary"):
         u = (u or "").strip().lower()
-
         if not u or not p:
             st.warning("Preencha usuário e senha.")
             st.stop()
@@ -434,25 +292,16 @@ def auth_screen() -> str:
             st.stop()
 
         sid = get_session_id()
-        ok, msg, mode = lock_user(u, sid)
+        ok, msg = lock_user(u, sid)
         if not ok:
             st.error(msg)
             st.stop()
 
         st.session_state["auth_user"] = u
-        st.session_state["user_mode"] = mode
-
-        if remember:
-            tok2 = remember_issue_token(u)
-            cookies.set("remember_token", tok2, max_age=60 * 60 * 24 * 30)
-
-        if msg:
-            st.info(msg)
-        st.success("Login realizado.")
+        st.success("Login ok!")
         st.rerun()
 
     st.stop()
-
 
 # --------------------------- HISTÓRICO ---------------------------
 
@@ -733,17 +582,6 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
             pass
     return extract_orders_sjp_from_text(text)
 
-def _build_pdf_pos_map(orders: list[list[str]], mapping: dict) -> dict:
-    """Mapa de posições do PDF por fila (posição 1-based dentro da própria seção)."""
-    pos = {}
-    for key, sec_idx in mapping.items():
-        d = {}
-        if orders and sec_idx < len(orders):
-            for i, f in enumerate(orders[sec_idx], start=1):
-                d[f] = i
-        pos[key] = d
-    return pos
-
 def normalize_fleet_list(raw: str):
     partes = [p.strip() for p in (raw or "").split(",") if p.strip()]
     normalized = []
@@ -792,35 +630,15 @@ def show_queue(title: str, queue_list, dot_class: str):
         _queue_card_footer()
         return
 
-    # posições do PDF (por fila)
-    key_map = {"super": "super_longa", "longa": "longa", "media": "media", "curta": "curta"}
-    pdf_key = key_map.get(dot_class)
-    pdf_pos = (st.session_state.get("pdf_pos_map") or {}).get(pdf_key, {})
-
     data = []
     for idx, f in enumerate(queue_list, start=1):
         destaque = "⭐" if f in st.session_state.frotas_destacadas else ""
-        pos_pdf = pdf_pos.get(f, "")
-        data.append({"Posição geral": pos_pdf, "Posição": idx, "Frota": f, "★": destaque})
-
-    df = pd.DataFrame(data)
-
-    def _hi_pos(col):
-        if col.name == "Posição":
-            return ["font-weight:900; font-size: 18px; text-align:center; background: rgba(255,255,255,.10);" for _ in col]
-        if col.name == "Posição geral":
-            return ["color: rgba(229,231,235,.75);" for _ in col]
-        return ["" for _ in col]
-
-    sty = df.style.apply(_hi_pos, axis=0).set_table_styles([
-        {"selector": "th", "props": [("font-weight", "800")]}
-    ])
+        data.append({"Posição": idx, "Frota": f, "★": destaque})
 
     st.markdown('<div class="table-wrap">', unsafe_allow_html=True)
-    st.dataframe(sty, hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(data), hide_index=True, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
     _queue_card_footer()
-
 
 def rebuild_queues(filial: str, normalized: list[str]):
     if filial == "RJ":
@@ -848,10 +666,6 @@ def rebuild_queues(filial: str, normalized: list[str]):
     st.session_state.frotas_destacadas = [f for f in st.session_state.frotas_destacadas if f in st.session_state.selected_fleets]
 
 def handle_remove_frota(user: str, filial: str, raw: str, is_carga: bool, fila_sel: str | None = None):
-    if not has_write_access():
-        st.warning("Você está em modo VISUALIZAÇÃO (somente leitura).")
-        return
-
     if not st.session_state.orders or all(len(o) == 0 for o in st.session_state.orders):
         st.warning("Leia primeiro o arquivo PDF.")
         return
@@ -878,29 +692,28 @@ def handle_remove_frota(user: str, filial: str, raw: str, is_carga: bool, fila_s
             lst.remove(f_norm)
             removed_any = True
 
-    if not removed_any:
-        st.info(f"{f_norm} não encontrada nas filas.")
-        return
+    if removed_any:
+        st.session_state.frotas_removidas.add(f_norm)
 
-    ts_human = datetime.now().strftime("%d/%m %H:%M")
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts_human = datetime.now().strftime("%d/%m %H:%M")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if is_carga:
-        st.session_state.registro_pegaram_carga.append({"frota": f_norm, "fila": fila_sel, "ts": ts_human})
-        history_append({"ts": ts, "user": user, "filial": filial, "action": "pegou_carga", "detail": f"{f_norm} ({fila_sel})"})
-        st.success(f"Frota {f_norm} removida (pegou carga).")
+        if is_carga:
+            st.session_state.registro_pegaram_carga.append({"frota": f_norm, "fila": fila_sel, "ts": ts_human})
+            history_append({"ts": ts, "user": user, "filial": filial, "action": "pegou_carga", "detail": f"{f_norm} ({fila_sel})"})
+            st.success(f"Frota {f_norm} removida (pegou carga).")
+        else:
+            st.session_state.registro_excluidas.append({"frota": f_norm, "ts": ts_human})
+            history_append({"ts": ts, "user": user, "filial": filial, "action": "excluida", "detail": f_norm})
+            st.success(f"Frota {f_norm} excluída.")
+
+        if f_norm in st.session_state.frotas_destacadas:
+            st.session_state.frotas_destacadas.remove(f_norm)
+
+        if st.session_state.get("mode_shared"):
+            persist_to_shared(filial)
     else:
-        st.session_state.registro_excluidas.append({"frota": f_norm, "ts": ts_human})
-        history_append({"ts": ts, "user": user, "filial": filial, "action": "excluida", "detail": f_norm})
-        st.success(f"Frota {f_norm} excluída.")
-
-    if f_norm in st.session_state.frotas_destacadas:
-        st.session_state.frotas_destacadas.remove(f_norm)
-
-    # salva estado compartilhado (restauração e viewers)
-    save_shared_state(user)
-
-
+        st.info(f"{f_norm} não encontrada nas filas.")
 
 def generate_pdf_registro(suffix: str):
     if not (st.session_state.registro_pegaram_carga or st.session_state.registro_excluidas):
@@ -960,39 +773,11 @@ def main():
 
     touch_lock(user, get_session_id())
 
-    # Carrega/compartilha estado do trabalho (restaurar o que estava fazendo)
-    if "shared_loaded" not in st.session_state:
-        st.session_state.shared_loaded = False
-
-    shared = load_shared_state(user)
-    if shared:
-        # viewer sempre acompanha o estado salvo; owner só carrega uma vez (quando volta)
-        if st.session_state.get("user_mode", "owner") == "viewer" or not st.session_state.shared_loaded:
-            for k, v in shared.items():
-                if k == "ts":
-                    continue
-                st.session_state[k] = v
-            st.session_state.shared_loaded = True
-
-    # auto-atualização para viewers (para ver o que o DONO está fazendo)
-    if st.session_state.get("user_mode", "owner") == "viewer":
-        st.sidebar.info("Modo VISUALIZAÇÃO: você pode ver, mas não alterar.")
-        st.autorefresh(interval=5000, key="viewer_refresh")
-
-
-
     st.sidebar.markdown("## 👤 Sessão")
     st.sidebar.write(f"Usuário: **{user}**")
     if st.sidebar.button("Sair"):
-        cookies = stx.CookieManager()
-        tok = cookies.get("remember_token")
-        if tok:
-            remember_revoke_token(tok)
-            cookies.delete("remember_token")
         unlock_user(user, get_session_id())
         st.session_state.pop("auth_user", None)
-        st.session_state.pop("user_mode", None)
-        st.session_state.pop("shared_loaded", None)
         st.rerun()
 
     st.title("🚛 Gerenciador de Filas")
@@ -1067,7 +852,6 @@ def main():
                     st.session_state.registro_pegaram_carga = []
                     st.session_state.registro_excluidas = []
                     st.success("Arquivo lido com sucesso.")
-                    save_shared_state(st.session_state.get("auth_user",""))
 
                     history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     "user": user, "filial": filial, "action": "ler_pdf", "detail": "PDF carregado"})
@@ -1086,7 +870,7 @@ def main():
         st.subheader("Montagem das Filas")
         fleets_input = st.text_input("Digite as frotas separadas por vírgula")
 
-        if st.button("Montar Filas", disabled=not has_write_access()):
+        if st.button("Montar Filas"):
             if not st.session_state.orders or all(len(o) == 0 for o in st.session_state.orders):
                 st.warning("Leia primeiro o arquivo PDF na aba 'Arquivo'.")
             elif not fleets_input.strip():
@@ -1102,28 +886,11 @@ def main():
                     persist_to_shared(filial)
 
                 st.success("Filas montadas (ordem do PDF).")
-                save_shared_state(st.session_state.get("auth_user",""))
-
-                # Prévia (posições)
-                rows_prev = []
-                pdfm = st.session_state.get("pdf_pos_map") or {}
-                def add_rows(fila_nome, fila_key, lst):
-                    pmap = pdfm.get(fila_key, {})
-                    for i, f in enumerate(lst or [], start=1):
-                        rows_prev.append({"Fila": fila_nome, "Posição": i, "Posição geral": pmap.get(f, ""), "Frota": f})
-                add_rows("Super Longa", "super_longa", st.session_state.queue_super_longa)
-                add_rows("Longa", "longa", st.session_state.queue_longa)
-                add_rows("Média", "media", st.session_state.queue_media)
-                add_rows("Curta", "curta", st.session_state.queue_curta)
-                if rows_prev:
-                    st.markdown("#### Prévia (posições)")
-                    st.dataframe(pd.DataFrame(rows_prev), hide_index=True, use_container_width=True)
-
 
         st.markdown("---")
         st.subheader("Destaque de Frotas")
         destacar_input = st.text_input("Destacar frotas (separadas por vírgula, após montar as filas)")
-        if st.button("Atualizar Destaques", disabled=not has_write_access()):
+        if st.button("Atualizar Destaques"):
             parts = normalize_fleet_list(destacar_input)
             for f in parts:
                 if f not in st.session_state.selected_fleets:
@@ -1140,7 +907,6 @@ def main():
                 persist_to_shared(filial)
 
             st.success("Frotas destacadas atualizadas.")
-            save_shared_state(st.session_state.get("auth_user",""))
 
         st.markdown("---")
         st.subheader("Resumo rápido")
@@ -1173,7 +939,7 @@ def main():
         with col2:
             st.markdown("#### ❌ Frota excluída")
             frota_exc = st.text_input("Frota", key="frota_excluida")
-            if st.button("Excluir Frota", disabled=not has_write_access()):
+            if st.button("Excluir Frota"):
                 handle_remove_frota(user, filial, frota_exc, is_carga=False, fila_sel=None)
 
         st.markdown("---")
@@ -1190,7 +956,7 @@ def main():
         st.markdown("---")
         st.subheader("Gerar PDF de Registro")
 
-        if st.button("Gerar PDF (Registro)", disabled=not has_write_access()):
+        if st.button("Gerar PDF (Registro)"):
             if not (st.session_state.registro_pegaram_carga or st.session_state.registro_excluidas):
                 st.info("Sem dados para gerar PDF.")
             else:
