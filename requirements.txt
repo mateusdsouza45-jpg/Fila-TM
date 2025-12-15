@@ -1,4 +1,5 @@
 streamlit
+pandas
 pdfminer.six
 reportlab
-pandas
+extra-streamlit-components
