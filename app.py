@@ -677,8 +677,7 @@ def show_queue(title: str, queue_list, dot_class: str):
     st.dataframe(sty, hide_index=True, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
     _queue_card_footer()
-        return
-
+  
     data = []
     for idx, f in enumerate(queue_list, start=1):
         destaque = "⭐" if f in st.session_state.frotas_destacadas else ""
