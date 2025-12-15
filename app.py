@@ -582,17 +582,6 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
             pass
     return extract_orders_sjp_from_text(text)
 
-def _build_pdf_pos_map(orders: list[list[str]], mapping: dict) -> dict:
-    """Mapa de posições do PDF por fila (posição 1-based dentro da própria seção)."""
-    pos = {}
-    for key, sec_idx in mapping.items():
-        d = {}
-        if orders and sec_idx < len(orders):
-            for i, f in enumerate(orders[sec_idx], start=1):
-                d[f] = i
-        pos[key] = d
-    return pos
-
 def normalize_fleet_list(raw: str):
     partes = [p.strip() for p in (raw or "").split(",") if p.strip()]
     normalized = []
@@ -634,6 +623,17 @@ def _queue_card_header(title: str, count: int, dot_class: str):
 def _queue_card_footer():
     st.markdown("</div>", unsafe_allow_html=True)
 
+def _build_pdf_pos_map(orders: list[list[str]], mapping: dict) -> dict:
+    """Mapa de posições do PDF por fila (posição 1-based dentro da própria seção)."""
+    pos = {}
+    for key, sec_idx in mapping.items():
+        d = {}
+        if orders and sec_idx < len(orders):
+            for i, f in enumerate(orders[sec_idx], start=1):
+                d[f] = i
+        pos[key] = d
+    return pos
+
 def show_queue(title: str, queue_list, dot_class: str):
     _queue_card_header(title, len(queue_list or []), dot_class)
     if not queue_list:
@@ -645,46 +645,38 @@ def show_queue(title: str, queue_list, dot_class: str):
     pdf_key = key_map.get(dot_class)
     pdf_pos = (st.session_state.get("pdf_pos_map") or {}).get(pdf_key, {})
 
-    data = []
+    rows = []
     for idx, f in enumerate(queue_list, start=1):
         destaque = "⭐" if f in st.session_state.frotas_destacadas else ""
-        data.append({
+        rows.append({
             "Posição geral": pdf_pos.get(f, ""),
             "Posição": idx,
             "Frota": f,
             "★": destaque,
         })
 
-    df = pd.DataFrame(data)
+    df = pd.DataFrame(rows)
 
-    def _hi_cols(row):
-        # destaca a coluna Posição (fila montada)
-        styles = [""] * len(row)
-        for i, col in enumerate(df.columns):
+    def _style_row(_):
+        # aplica estilos por linha (para todas as colunas)
+        styles = []
+        for col in df.columns:
             if col == "Posição":
-                styles[i] = "font-weight:800; font-size:18px; text-align:center; background: rgba(255,255,255,.10);"
+                styles.append("font-weight:800; font-size:18px; text-align:center; background: rgba(255,255,255,.10);")
             elif col == "Posição geral":
-                styles[i] = "color: rgba(229,231,235,.75); text-align:center;"
-            elif col in ("★",):
-                styles[i] = "text-align:center;"
+                styles.append("color: rgba(229,231,235,.75); text-align:center;")
+            elif col == "★":
+                styles.append("text-align:center;")
+            else:
+                styles.append("")
         return styles
 
-    sty = df.style.apply(_hi_cols, axis=1).set_table_styles(
+    sty = df.style.apply(_style_row, axis=1).set_table_styles(
         [{"selector": "th", "props": [("font-weight", "800")]}]
     )
 
     st.markdown('<div class="table-wrap">', unsafe_allow_html=True)
     st.dataframe(sty, hide_index=True, use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-    _queue_card_footer()
-  
-    data = []
-    for idx, f in enumerate(queue_list, start=1):
-        destaque = "⭐" if f in st.session_state.frotas_destacadas else ""
-        data.append({"Posição": idx, "Frota": f, "★": destaque})
-
-    st.markdown('<div class="table-wrap">', unsafe_allow_html=True)
-    st.dataframe(pd.DataFrame(data), hide_index=True, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
     _queue_card_footer()
 
