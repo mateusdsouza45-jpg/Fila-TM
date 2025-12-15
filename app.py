@@ -130,8 +130,8 @@ def _atomic_write_json(path: str, obj):
 
 # --------------------------- SESSÕES (1 login por usuário) + LOG ADMIN ---------------------------
 REMEMBER_TOKENS_PATH = _safe_path("remember_tokens.json")
-STATE_DIR = _safe_path("user_state")
-os.makedirs(STATE_DIR, exist_ok=True)
+STATE_DIR = _safe_path("user_state_dir")
+STATE_DIR = _ensure_dir(STATE_DIR)
 REMEMBER_DAYS = 30
 
 def _remember_load() -> dict:
