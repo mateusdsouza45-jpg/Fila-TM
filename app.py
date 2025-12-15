@@ -583,7 +583,7 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
     return extract_orders_sjp_from_text(text)
 
 def _build_pdf_pos_map(orders: list[list[str]], mapping: dict) -> dict:
-    """Mapa de posições do PDF por fila (posição 1-based dentro da própria seção do PDF)."""
+    """Mapa de posições do PDF por fila (posição 1-based dentro da própria seção)."""
     pos = {}
     for key, sec_idx in mapping.items():
         d = {}
@@ -648,23 +648,44 @@ def show_queue(title: str, queue_list, dot_class: str):
     data = []
     for idx, f in enumerate(queue_list, start=1):
         destaque = "⭐" if f in st.session_state.frotas_destacadas else ""
-        data.append({"Posição geral": pdf_pos.get(f, ""), "Posição": idx, "Frota": f, "★": destaque})
+        data.append({
+            "Posição geral": pdf_pos.get(f, ""),
+            "Posição": idx,
+            "Frota": f,
+            "★": destaque,
+        })
 
     df = pd.DataFrame(data)
 
-    def _hi_pos(col):
-        if col.name == "Posição":
-            return ["font-weight:800; font-size:18px; text-align:center; background: rgba(255,255,255,.10);" for _ in col]
-        if col.name == "Posição geral":
-            return ["color: rgba(255,255,255,.70);" for _ in col]
-        return ["" for _ in col]
+    def _hi_cols(row):
+        # destaca a coluna Posição (fila montada)
+        styles = [""] * len(row)
+        for i, col in enumerate(df.columns):
+            if col == "Posição":
+                styles[i] = "font-weight:800; font-size:18px; text-align:center; background: rgba(255,255,255,.10);"
+            elif col == "Posição geral":
+                styles[i] = "color: rgba(229,231,235,.75); text-align:center;"
+            elif col in ("★",):
+                styles[i] = "text-align:center;"
+        return styles
 
-    sty = df.style.apply(_hi_pos, axis=0).set_table_styles(
-        [{"selector": "th", "props": [("font-weight", "700")]}]
+    sty = df.style.apply(_hi_cols, axis=1).set_table_styles(
+        [{"selector": "th", "props": [("font-weight", "800")]}]
     )
 
     st.markdown('<div class="table-wrap">', unsafe_allow_html=True)
     st.dataframe(sty, hide_index=True, use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    _queue_card_footer()
+        return
+
+    data = []
+    for idx, f in enumerate(queue_list, start=1):
+        destaque = "⭐" if f in st.session_state.frotas_destacadas else ""
+        data.append({"Posição": idx, "Frota": f, "★": destaque})
+
+    st.markdown('<div class="table-wrap">', unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame(data), hide_index=True, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
     _queue_card_footer()
 
@@ -673,9 +694,6 @@ def rebuild_queues(filial: str, normalized: list[str]):
         mapping = {"super_longa": 1, "longa": 2, "media": 3, "curta": 4}
     else:
         mapping = {"super_longa": 2, "longa": 0, "media": 3, "curta": 4}
-
-    # posições gerais (originais) do PDF por fila
-    st.session_state.pdf_pos_map = _build_pdf_pos_map(st.session_state.orders, mapping)
 
     removidas = st.session_state.get("frotas_removidas", set())
 
@@ -917,28 +935,6 @@ def main():
                     persist_to_shared(filial)
 
                 st.success("Filas montadas (ordem do PDF).")
-
-                # Prévia (posições): posição na fila montada + posição geral no PDF (por fila)
-                rows_prev = []
-                pdfm = st.session_state.get("pdf_pos_map") or {}
-                def add_rows(fila_nome, fila_key, lst):
-                    pmap = pdfm.get(fila_key, {})
-                    for i, f in enumerate(lst or [], start=1):
-                        rows_prev.append({
-                            "Fila": fila_nome,
-                            "Posição": i,
-                            "Posição geral": pmap.get(f, ""),
-                            "Frota": f,
-                        })
-                add_rows("Super Longa", "super_longa", st.session_state.queue_super_longa)
-                add_rows("Longa", "longa", st.session_state.queue_longa)
-                add_rows("Média", "media", st.session_state.queue_media)
-                add_rows("Curta", "curta", st.session_state.queue_curta)
-                if rows_prev:
-                    st.markdown("#### Prévia (posições)")
-                    dfp = pd.DataFrame(rows_prev)
-                    st.dataframe(dfp, hide_index=True, use_container_width=True)
-
 
         st.markdown("---")
         st.subheader("Destaque de Frotas")
