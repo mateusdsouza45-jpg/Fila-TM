@@ -582,20 +582,6 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
             pass
     return extract_orders_sjp_from_text(text)
 
-def _build_pdf_pos_map_simple(orders: list[list[str]], mapping: dict) -> dict:
-    """Mapa de posições do PDF por fila. Retorna dict {'super':{'250':21,...}, ...}.
-    Posição é 1-based dentro da própria seção do PDF.
-    mapping usa indices das seções (orders) para cada fila.
-    """
-    pos = {}
-    for k, sec_idx in mapping.items():
-        d = {}
-        if orders and sec_idx < len(orders):
-            for i, f in enumerate(orders[sec_idx], start=1):
-                d[str(f)] = i
-        pos[k] = d
-    return pos
-
 def normalize_fleet_list(raw: str):
     partes = [p.strip() for p in (raw or "").split(",") if p.strip()]
     normalized = []
@@ -637,21 +623,33 @@ def _queue_card_header(title: str, count: int, dot_class: str):
 def _queue_card_footer():
     st.markdown("</div>", unsafe_allow_html=True)
 
-def show_queue(title: str, queue_list, dot_class: str):
+def show_queue(title: str, queue_list, dot_class: str, filial: str, filial):
     _queue_card_header(title, len(queue_list or []), dot_class)
     if not queue_list:
         st.info("Fila vazia.")
         _queue_card_footer()
         return
 
-    pdf_pos = (st.session_state.get("pdf_pos_map") or {}).get(dot_class, {})
+    # posição geral = posição na seção do PDF (1-based) correspondente a esta fila
+    # (usa exatamente o que foi lido do PDF em st.session_state.orders)
+    if filial == "RJ":
+        sec_map = {"super": 1, "longa": 2, "media": 3, "curta": 4}
+    else:
+        sec_map = {"super": 2, "longa": 0, "media": 3, "curta": 4}
+
+    sec_idx = sec_map.get(dot_class)
+    sec_list = []
+    if sec_idx is not None and st.session_state.get("orders") and sec_idx < len(st.session_state.orders):
+        sec_list = st.session_state.orders[sec_idx] or []
+
+    pos_lookup = {str(f): i for i, f in enumerate(sec_list, start=1)}
 
     data = []
     for idx, f in enumerate(queue_list, start=1):
         f_str = str(f)
         destaque = "⭐" if f_str in st.session_state.frotas_destacadas else ""
         data.append({
-            "Posição geral": pdf_pos.get(f_str, ""),
+            "Posição geral": pos_lookup.get(f_str, ""),
             "Posição": idx,
             "Frota": f_str,
             "★": destaque,
@@ -659,7 +657,7 @@ def show_queue(title: str, queue_list, dot_class: str):
 
     df = pd.DataFrame(data)
 
-    def _hi_row(row):
+    def _hi_row(_row):
         styles = []
         for col in df.columns:
             if col == "Posição":
@@ -680,6 +678,7 @@ def show_queue(title: str, queue_list, dot_class: str):
     st.dataframe(sty, hide_index=True, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
     _queue_card_footer()
+        return
 
     data = []
     for idx, f in enumerate(queue_list, start=1):
@@ -968,13 +967,17 @@ def main():
         m4.metric("Curta", len(st.session_state.queue_curta))
 
         st.subheader("Visualização das Filas")
+
+        # Layout fixo:
+        # Esquerda: 1-SUPER LONGA (topo) + 3-MÉDIA (embaixo)
+        # Direita : 2-LONGA (topo)       + 4-CURTA (embaixo)
         col1, col2 = st.columns(2)
         with col1:
-            show_queue("1 - SUPER LONGA", st.session_state.queue_super_longa, "super")
-            show_queue("3 - MÉDIA", st.session_state.queue_media, "media")
+            show_queue("1 - SUPER LONGA", st.session_state.queue_super_longa, "super", filial)
+            show_queue("3 - MÉDIA", st.session_state.queue_media, "media", filial)
         with col2:
-            show_queue("2 - LONGA", st.session_state.queue_longa, "longa")
-            show_queue("4 - CURTA", st.session_state.queue_curta, "curta")
+            show_queue("2 - LONGA", st.session_state.queue_longa, "longa", filial)
+            show_queue("4 - CURTA", st.session_state.queue_curta, "curta", filial)
 
     with tab_ops:
         st.subheader("Gestão das Filas")
