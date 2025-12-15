@@ -623,7 +623,7 @@ def _queue_card_header(title: str, count: int, dot_class: str):
 def _queue_card_footer():
     st.markdown("</div>", unsafe_allow_html=True)
 
-def show_queue(title: str, queue_list, dot_class: str, filial: str, filial):
+def show_queue(title: str, queue_list, dot_class: str, filial):
     _queue_card_header(title, len(queue_list or []), dot_class)
     if not queue_list:
         st.info("Fila vazia.")
@@ -678,7 +678,6 @@ def show_queue(title: str, queue_list, dot_class: str, filial: str, filial):
     st.dataframe(sty, hide_index=True, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
     _queue_card_footer()
-        return
 
     data = []
     for idx, f in enumerate(queue_list, start=1):
