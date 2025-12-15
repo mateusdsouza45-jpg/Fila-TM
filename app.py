@@ -623,15 +623,14 @@ def _queue_card_header(title: str, count: int, dot_class: str):
 def _queue_card_footer():
     st.markdown("</div>", unsafe_allow_html=True)
 
-def show_queue(title: str, queue_list, dot_class: str, filial):
+def show_queue(title: str, queue_list, dot_class: str, filial: str):
     _queue_card_header(title, len(queue_list or []), dot_class)
     if not queue_list:
         st.info("Fila vazia.")
         _queue_card_footer()
         return
 
-    # posição geral = posição na seção do PDF (1-based) correspondente a esta fila
-    # (usa exatamente o que foi lido do PDF em st.session_state.orders)
+    # Posição geral = posição na seção do PDF (1-based) correspondente a esta fila
     if filial == "RJ":
         sec_map = {"super": 1, "longa": 2, "media": 3, "curta": 4}
     else:
@@ -661,9 +660,9 @@ def show_queue(title: str, queue_list, dot_class: str, filial):
         styles = []
         for col in df.columns:
             if col == "Posição":
-                styles.append("font-weight:900; font-size:18px; text-align:center; background: rgba(255,255,255,.10);")
+                styles.append("font-weight:900; font-size:18px; text-align:center; background: rgba(0,0,0,.06);")
             elif col == "Posição geral":
-                styles.append("color: rgba(229,231,235,.70); text-align:center;")
+                styles.append("color: rgba(0,0,0,.75); font-weight:700; text-align:center;")
             elif col == "★":
                 styles.append("text-align:center;")
             else:
@@ -967,7 +966,7 @@ def main():
 
         st.subheader("Visualização das Filas")
 
-        # Layout fixo:
+        # Layout (PC e celular):
         # Esquerda: 1-SUPER LONGA (topo) + 3-MÉDIA (embaixo)
         # Direita : 2-LONGA (topo)       + 4-CURTA (embaixo)
         col1, col2 = st.columns(2)
@@ -977,6 +976,7 @@ def main():
         with col2:
             show_queue("2 - LONGA", st.session_state.queue_longa, "longa", filial)
             show_queue("4 - CURTA", st.session_state.queue_curta, "curta", filial)
+
 
     with tab_ops:
         st.subheader("Gestão das Filas")
