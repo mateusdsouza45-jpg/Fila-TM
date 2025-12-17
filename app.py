@@ -247,19 +247,29 @@ def _users_load() -> dict:
 def _users_save(data: dict) -> None:
     _atomic_write_json(USERS_PATH, data)
 
-
 def ensure_admin_user():
-    """Garante que o usuário admin exista (mesmo se não tiver cadastro)."""
-    ADMIN_USERNAME = "mateus.s"
-    ADMIN_PASSWORD = "110824"  # troque se quiser
+    """Garante usuários iniciais existirem (admin + comuns)."""
+    SEED_USERS = [
+        {"username": "mateus.souza", "password": "110824", "admin": True},
+        {"username": "denis", "password": "112233", "admin": False},
+        {"username": "henrique", "password": "112233", "admin": False},
+    ]
+
     db = _users_load()
     users = db.get("users", {})
-    if ADMIN_USERNAME not in users:
-        users[ADMIN_USERNAME] = _hash_password(ADMIN_PASSWORD)
+
+    changed = False
+    for u in SEED_USERS:
+        uname = (u["username"] or "").strip().lower()
+        if uname and uname not in users:
+            users[uname] = _hash_password(u["password"])
+            changed = True
+
+    if changed:
         db["users"] = users
         _users_save(db)
 
-ADMIN_USERS = {"mateus.s"}  # usuários admin fixos
+ADMIN_USERS = {"mateus.souza"}  # usuários admin fixos
 
 def auth_screen() -> str:
     """Tela inicial: somente LOGIN (1 sessão por usuário). Criação de usuários é feita pelo admin."""
@@ -1104,7 +1114,7 @@ def main():
 
             st.markdown("---")
             st.markdown("### ❌ Excluir usuário")
-            safe_users = [u for u in users_list if u != "mateus.s"]
+            safe_users = [u for u in users_list if u != "mateus.souza"]
             del_user = st.selectbox("Selecione um usuário", ["(nenhum)"] + safe_users, key="del_user")
             if st.button("Excluir usuário", key="btn_del"):
                 if del_user == "(nenhum)":
