@@ -453,19 +453,33 @@ def load_from_shared(filial: str):
 #                           SEU APP (parsing e filas)
 # =============================================================================
 
-FROTAS_VALIDAS = {
-    203,205,207,208,211,212,215,218,219,222,223,226,227,228,229,230,
-    231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,
-    247,248,249,250,251,252,253,267,301,302,303,304,305,306,307,308,
-    309,310,311,312,313,314,315,316,317,318,319,320,321,322,323,324,
-    325,326,327,328,329,330,331,332,333,334,335,336,401,402,403,404,
-    405,406,407,408,409,410,411,412,413,414,415,416,417,418,419,420,
-    421,422,423,424,425,426,427,428,429,430,431,432,433,434,435,436,
-    437,438,439,440,451,452,453,454,455,456,457,458,459,460,461,462,
-    463,464,466,467,468,469,470,
-    501,502,503,504,505,506,507,508,509,510,511,512,513,514,515,516,517,518,519,520,521,522,523,524,525,526,527,528,529,530,531,532,533,534,535,536,537,538,539,540,541,542,543,544,545,546,547,548,549,550,551,552,553,554,555,556,557,558,559,560,561,562,563,564,565,566,567,568,569,570,571,572,573,574,575,576
+# --------------------------- FROTAS VÁLIDAS ---------------------------
+# Principais: 200–470 (lista histórica do app)
+FROTAS_PRINCIPAIS = {
+    203, 205, 207, 208, 211, 212, 215, 218, 219, 222, 223, 226, 227, 228, 229, 230,
+    231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246,
+    247, 248, 249, 250, 251, 252, 253, 267, 301, 302, 303, 304, 305, 306, 307, 308,
+    309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324,
+    325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 401, 402, 403, 404,
+    405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 419, 420,
+    421, 422, 423, 424, 425, 426, 427, 428, 429, 430, 431, 432, 433, 434, 435, 436,
+    437, 438, 439, 440, 451, 452, 453, 454, 455, 456, 457, 458, 459, 460, 461, 462,
+    463, 464, 466, 467, 468, 469, 470
 }
-FROTAS_VALIDAS_STR = {str(x) for x in FROTAS_VALIDAS}
+
+# Extras: grupo 500 (501–576)
+FROTAS_EXTRAS_500 = {
+    501, 502, 503, 504, 505, 506, 507, 508, 509, 510, 511, 512, 513, 514, 515, 516,
+    517, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530, 531, 532,
+    533, 534, 535, 536, 537, 538, 539, 540, 541, 542, 543, 544, 545, 546, 547, 548,
+    549, 550, 551, 552, 553, 554, 555, 556, 557, 558, 559, 560, 561, 562, 563, 564,
+    565, 566, 567, 568, 569, 570, 571, 572, 573, 574, 575, 576
+}
+
+FROTAS_PRINCIPAIS_STR = {str(x) for x in FROTAS_PRINCIPAIS}
+FROTAS_EXTRAS_500_STR = {str(x) for x in FROTAS_EXTRAS_500}
+FROTAS_TODAS_STR = FROTAS_PRINCIPAIS_STR | FROTAS_EXTRAS_500_STR
+
 
 SECTION_TITLES_RJ = [
     "INTER - RESENDE",
@@ -504,28 +518,35 @@ PATTERN_SEQ_INTERNO_FROTA_RJ = re.compile(
 PATTERN_ISOLATED_NUM_RJ = re.compile(r'(?<!\.)\b\d{2,6}\b(?!\.)')
 
 def extract_orders_rj_from_text(text: str):
-    # Número de seções no PDF do RJ (inclui blocos "500 - ...")
-    n_sections = len(SECTION_TITLES_RJ) if "SECTION_TITLES_RJ" in globals() else 5
-
+    # RJ agora tem 10 seções: 5 principais + 5 extras (500)
     if not text:
-        return [[] for _ in range(n_sections)]
+        return [[] for _ in range(len(SECTION_TITLES_RJ))]
 
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    sections = [[] for _ in range(n_sections)]
+    sections = [[] for _ in range(len(SECTION_TITLES_RJ))]
     current_sec_index = None
+
     for line in lines:
         for pattern, idx in SEC_PATTERNS_RJ:
             if pattern.search(line):
                 current_sec_index = idx
                 break
-        if current_sec_index is None or current_sec_index >= n_sections:
+
+        if current_sec_index is None:
             continue
+
+        # filtra por grupo para evitar misturar 200–470 com 500
+        valid_set = FROTAS_PRINCIPAIS_STR if current_sec_index < 5 else FROTAS_EXTRAS_500_STR
 
         m = PATTERN_SEQ_INTERNO_FROTA_RJ.search(line)
         if m:
             frota_cand = m.group(1)
-            n_norm = str(int(frota_cand))
-            if n_norm in FROTAS_VALIDAS_STR and n_norm not in sections[current_sec_index]:
+            try:
+                n_norm = str(int(frota_cand))
+            except Exception:
+                n_norm = None
+
+            if n_norm and n_norm in valid_set and n_norm not in sections[current_sec_index]:
                 sections[current_sec_index].append(n_norm)
             continue
 
@@ -537,11 +558,12 @@ def extract_orders_rj_from_text(text: str):
                     n_norm = str(int(n))
                 except Exception:
                     continue
-                if n_norm in FROTAS_VALIDAS_STR:
+                if n_norm in valid_set:
                     chosen = n_norm
                     break
             if chosen and chosen not in sections[current_sec_index]:
                 sections[current_sec_index].append(chosen)
+
     return sections
 
 def extract_rj_from_uploaded_pdf(uploaded_pdf):
@@ -615,13 +637,14 @@ def split_text_into_sections_sjp(text: str):
         blocks[idx] = blk
     return blocks
 
-def extract_fleets_from_block_sjp(block_text: str):
+def extract_fleets_from_block_sjp(block_text: str, valid_set: set[str]):
     ordered = []
     seen = set()
     for line in block_text.splitlines():
         line = line.strip()
         if not line:
             continue
+
         m = PATTERN_SEQ_INTERNO_FROTA_SJP.search(line)
         if m:
             frota_cand = m.group(1)
@@ -629,7 +652,7 @@ def extract_fleets_from_block_sjp(block_text: str):
                 n_norm = str(int(frota_cand))
             except Exception:
                 n_norm = None
-            if n_norm and n_norm in FROTAS_VALIDAS_STR and n_norm not in seen:
+            if n_norm and n_norm in valid_set and n_norm not in seen:
                 seen.add(n_norm)
                 ordered.append(n_norm)
             continue
@@ -642,7 +665,7 @@ def extract_fleets_from_block_sjp(block_text: str):
                     n_norm = str(int(n))
                 except Exception:
                     continue
-                if n_norm in FROTAS_VALIDAS_STR:
+                if n_norm in valid_set:
                     chosen = n_norm
                     break
             if chosen and chosen not in seen:
@@ -661,11 +684,11 @@ def extract_orders_sjp_from_text(text: str):
             nums = PATTERN_ISOLATED_NUM_SJP.findall(line)
             for n in nums:
                 n_norm = str(int(n))
-                if n_norm in FROTAS_VALIDAS_STR and n_norm not in seen:
+                if n_norm in FROTAS_TODAS_STR and n_norm not in seen:
                     seen.add(n_norm)
                     fallback.append(n_norm)
         return [fallback for _ in range(len(SECTION_LABELS_SJP))]
-    return [extract_fleets_from_block_sjp(blk) if blk else [] for blk in blocks]
+    return [extract_fleets_from_block_sjp(blk, FROTAS_PRINCIPAIS_STR if idx < 6 else FROTAS_EXTRAS_500_STR) if blk else [] for idx, blk in enumerate(blocks)]
 
 def extract_sjp_from_uploaded_pdf(uploaded_pdf):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
