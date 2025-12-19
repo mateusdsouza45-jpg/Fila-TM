@@ -336,36 +336,143 @@ def auth_screen() -> str:
 
 # --------------------------- META (Motorista / Últ. Viag.) ---------------------------
 
+# A linha do PDF (tanto RJ quanto PR/SJP) normalmente tem:
+# ... <FROTA> <DATA (dd/mm/aaaa)> <MOTORISTA...> <UF> <MUNICIPIO...> <INTERNO 999.999> ...
+# Alguns registros podem não ter DATA/UF/MUNICIPIO; nesses casos retornamos "NA".
 META_LINE_RE = re.compile(
-    r"""\b\d{1,3}\.\d{3}\b\s+(?P<frota>\d{2,6})\s+(?P<motorista>[A-ZÀ-Ü0-9 .'-]{3,}?)\s+(?P<data>\d{2}/\d{2}/\d{4})\b""",
+    r"""\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\s+(?P<interno>\d{3}\.\d{3})\b""",
+    re.UNICODE,
+)
+
+# Variante (sem data), quando existir UF/MUNICIPIO/INTERNO:
+META_LINE_RE_NO_DATE = re.compile(
+    r"""\b(?P<frota>\d{2,6})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\s+(?P<interno>\d{3}\.\d{3})\b""",
     re.UNICODE,
 )
 
 def extract_meta_from_text(text: str) -> dict:
-    """Extrai Motorista e Últ. Viag. por frota (quando possível). Se não achar, fica 'NA'."""
-    meta = {}
-    if not text:
+    """Extrai Motorista e Últ. Viag. por frota (quando possível). Se não achar, fica 'NA'.
+
+    Retorno:
+      meta[frota] = {"motorista": <str>, "ult_viag": <dd/mm/aaaa|NA>, "uf": <UF|NA>, "municipio": <str|NA>}
+    """
+    meta: dict[str, dict] = {}
+    if not text or len(text.strip()) < 5:
         return meta
-    for line in text.splitlines():
-        line = line.strip()
+
+    for raw_line in text.splitlines():
+        line = (raw_line or "").strip()
         if not line:
             continue
+
         m = META_LINE_RE.search(line)
-        if not m:
-            continue
-        frota = m.group("frota")
-        motorista = (m.group("motorista") or "").strip()
-        data = (m.group("data") or "").strip()
+        if m:
+            frota = m.group("frota")
+            data = (m.group("data") or "").strip()
+            motorista = (m.group("motorista") or "").strip()
+            uf = (m.group("uf") or "").strip()
+            municipio = (m.group("municipio") or "").strip()
+        else:
+            m2 = META_LINE_RE_NO_DATE.search(line)
+            if not m2:
+                continue
+            frota = m2.group("frota")
+            data = "NA"
+            motorista = (m2.group("motorista") or "").strip()
+            uf = (m2.group("uf") or "").strip()
+            municipio = (m2.group("municipio") or "").strip()
+
         # Normaliza frota
         try:
             frota = str(int(re.sub(r"\D", "", frota)))
         except Exception:
             continue
+
+        # Limpa motorista/municipio (evita pegar pedaços de cabeçalho)
+        motorista = re.sub(r"\s+", " ", motorista).strip()
+        municipio = re.sub(r"\s+", " ", municipio).strip()
+
+        if not motorista:
+            motorista = "NA"
+        if not data:
+            data = "NA"
+        if not uf:
+            uf = "NA"
+        if not municipio:
+            municipio = "NA"
+
+        # Mantém o primeiro registro encontrado para cada frota (mais previsível),
+        # mas você pode trocar para "sempre sobrescrever" se preferir.
         if frota not in meta:
-            meta[frota] = {
-                "motorista": motorista if motorista else "NA",
-                "ult_viag": data if data else "NA",
-            }
+            meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
+
+    return meta
+
+
+# --------------------------- META (motorista + última viagem) POR FILA ---------------------------
+
+META_ROW_RE = re.compile(
+    r"\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\b",
+    re.IGNORECASE,
+)
+
+def extract_meta_rj_by_section(text: str) -> dict:
+    """Retorna: meta[frota][sec_idx] = {motorista, ult_viag}"""
+    meta: dict = {}
+    if not text:
+        return meta
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    current_sec_index = None
+    for line in lines:
+        # atualiza seção quando encontrar cabeçalho
+        for pattern, idx in SEC_PATTERNS_RJ:
+            if pattern.search(line):
+                current_sec_index = idx
+                break
+        if current_sec_index is None:
+            continue
+
+        m = META_ROW_RE.search(line)
+        if not m:
+            continue
+        frota = str(int(m.group("frota")))
+        if frota not in FROTAS_TODAS_STR:
+            continue
+
+        motorista = re.sub(r"\s+", " ", (m.group("motorista") or "").strip()) or "NA"
+        data = (m.group("data") or "").strip() or "NA"
+
+        meta.setdefault(frota, {})[current_sec_index] = {"motorista": motorista, "ult_viag": data}
+    return meta
+
+def extract_meta_sjp_by_section(text: str) -> dict:
+    """Retorna: meta[frota][sec_idx] = {motorista, ult_viag}"""
+    meta: dict = {}
+    if not text:
+        return meta
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    current_sec_index = None
+
+    sec_patterns = list(enumerate(SECTION_PATTERNS_SJP))
+    for line in lines:
+        for idx, pat in sec_patterns:
+            if pat.search(line):
+                current_sec_index = idx
+                break
+        if current_sec_index is None:
+            continue
+
+        m = META_ROW_RE.search(line)
+        if not m:
+            continue
+        frota = str(int(m.group("frota")))
+        if frota not in FROTAS_TODAS_STR:
+            continue
+
+        motorista = re.sub(r"\s+", " ", (m.group("motorista") or "").strip()) or "NA"
+        data = (m.group("data") or "").strip() or "NA"
+        meta.setdefault(frota, {})[current_sec_index] = {"motorista": motorista, "ult_viag": data}
+
     return meta
 
 # --------------------------- HISTÓRICO ---------------------------
@@ -1206,7 +1313,7 @@ def main():
                 sec_name = section_labels[sec_idx] if sec_idx < len(section_labels) else f"Seção {sec_idx+1}"
                 for posi, frota in enumerate(sec_list or [], start=1):
                     frota_str = str(frota)
-                    mrec = meta.get(frota_str, {})
+                    mrec = (meta.get(frota_str, {}) or {}).get(sec_idx, {})
                     rows.append({
                         "Seção": sec_name,
                         "Posição": posi,
