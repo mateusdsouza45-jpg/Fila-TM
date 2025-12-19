@@ -333,148 +333,6 @@ def auth_screen() -> str:
 
     st.stop()
 
-
-# --------------------------- META (Motorista / Últ. Viag.) ---------------------------
-
-# A linha do PDF (tanto RJ quanto PR/SJP) normalmente tem:
-# ... <FROTA> <DATA (dd/mm/aaaa)> <MOTORISTA...> <UF> <MUNICIPIO...> <INTERNO 999.999> ...
-# Alguns registros podem não ter DATA/UF/MUNICIPIO; nesses casos retornamos "NA".
-META_LINE_RE = re.compile(
-    r"""\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\s+(?P<interno>\d{3}\.\d{3})\b""",
-    re.UNICODE,
-)
-
-# Variante (sem data), quando existir UF/MUNICIPIO/INTERNO:
-META_LINE_RE_NO_DATE = re.compile(
-    r"""\b(?P<frota>\d{2,6})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\s+(?P<interno>\d{3}\.\d{3})\b""",
-    re.UNICODE,
-)
-
-def extract_meta_from_text(text: str) -> dict:
-    """Extrai Motorista e Últ. Viag. por frota (quando possível). Se não achar, fica 'NA'.
-
-    Retorno:
-      meta[frota] = {"motorista": <str>, "ult_viag": <dd/mm/aaaa|NA>, "uf": <UF|NA>, "municipio": <str|NA>}
-    """
-    meta: dict[str, dict] = {}
-    if not text or len(text.strip()) < 5:
-        return meta
-
-    for raw_line in text.splitlines():
-        line = (raw_line or "").strip()
-        if not line:
-            continue
-
-        m = META_LINE_RE.search(line)
-        if m:
-            frota = m.group("frota")
-            data = (m.group("data") or "").strip()
-            motorista = (m.group("motorista") or "").strip()
-            uf = (m.group("uf") or "").strip()
-            municipio = (m.group("municipio") or "").strip()
-        else:
-            m2 = META_LINE_RE_NO_DATE.search(line)
-            if not m2:
-                continue
-            frota = m2.group("frota")
-            data = "NA"
-            motorista = (m2.group("motorista") or "").strip()
-            uf = (m2.group("uf") or "").strip()
-            municipio = (m2.group("municipio") or "").strip()
-
-        # Normaliza frota
-        try:
-            frota = str(int(re.sub(r"\D", "", frota)))
-        except Exception:
-            continue
-
-        # Limpa motorista/municipio (evita pegar pedaços de cabeçalho)
-        motorista = re.sub(r"\s+", " ", motorista).strip()
-        municipio = re.sub(r"\s+", " ", municipio).strip()
-
-        if not motorista:
-            motorista = "NA"
-        if not data:
-            data = "NA"
-        if not uf:
-            uf = "NA"
-        if not municipio:
-            municipio = "NA"
-
-        # Mantém o primeiro registro encontrado para cada frota (mais previsível),
-        # mas você pode trocar para "sempre sobrescrever" se preferir.
-        if frota not in meta:
-            meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
-
-    return meta
-
-
-# --------------------------- META (motorista + última viagem) POR FILA ---------------------------
-
-META_ROW_RE = re.compile(
-    r"\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\b",
-    re.IGNORECASE,
-)
-
-def extract_meta_rj_by_section(text: str) -> dict:
-    """Retorna: meta[frota][sec_idx] = {motorista, ult_viag}"""
-    meta: dict = {}
-    if not text:
-        return meta
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    current_sec_index = None
-    for line in lines:
-        # atualiza seção quando encontrar cabeçalho
-        for pattern, idx in SEC_PATTERNS_RJ:
-            if pattern.search(line):
-                current_sec_index = idx
-                break
-        if current_sec_index is None:
-            continue
-
-        m = META_ROW_RE.search(line)
-        if not m:
-            continue
-        frota = str(int(m.group("frota")))
-        if frota not in FROTAS_TODAS_STR:
-            continue
-
-        motorista = re.sub(r"\s+", " ", (m.group("motorista") or "").strip()) or "NA"
-        data = (m.group("data") or "").strip() or "NA"
-
-        meta.setdefault(frota, {})[current_sec_index] = {"motorista": motorista, "ult_viag": data}
-    return meta
-
-def extract_meta_sjp_by_section(text: str) -> dict:
-    """Retorna: meta[frota][sec_idx] = {motorista, ult_viag}"""
-    meta: dict = {}
-    if not text:
-        return meta
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    current_sec_index = None
-
-    sec_patterns = list(enumerate(SECTION_PATTERNS_SJP))
-    for line in lines:
-        for idx, pat in sec_patterns:
-            if pat.search(line):
-                current_sec_index = idx
-                break
-        if current_sec_index is None:
-            continue
-
-        m = META_ROW_RE.search(line)
-        if not m:
-            continue
-        frota = str(int(m.group("frota")))
-        if frota not in FROTAS_TODAS_STR:
-            continue
-
-        motorista = re.sub(r"\s+", " ", (m.group("motorista") or "").strip()) or "NA"
-        data = (m.group("data") or "").strip() or "NA"
-        meta.setdefault(frota, {})[current_sec_index] = {"motorista": motorista, "ult_viag": data}
-
-    return meta
-
 # --------------------------- HISTÓRICO ---------------------------
 
 def history_append(event: dict):
@@ -697,9 +555,8 @@ def extract_orders_rj_from_text(text: str):
     return sections
 
 def extract_rj_from_uploaded_pdf(uploaded_pdf):
-    pdf_bytes = uploaded_pdf.read()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(pdf_bytes)
+        tmp.write(uploaded_pdf.read())
         tmp_path = tmp.name
     try:
         text = extract_text(tmp_path)
@@ -708,62 +565,11 @@ def extract_rj_from_uploaded_pdf(uploaded_pdf):
             os.remove(tmp_path)
         except Exception:
             pass
+
     orders = extract_orders_rj_from_text(text)
-    meta = extract_meta_from_text(text)
-    return orders, meta
+    meta_by_section = extract_meta_rj_by_section(text)
+    return orders, meta_by_section
 
-# --------------------------- SJP (PR) — seções do PDF (principais + extras) ---------------------------
-
-# Ordem esperada no PDF (12 seções):
-# 1 LONGA (200–470)
-# 2 SUPER CURTA (200–470)
-# 3 SUPER-LONGA (200–470)
-# 4 MÉDIA (200–470)
-# 5 CURTA (200–470)
-# 6 INTERNACIONAL (200–470)
-# 7 SUPER CURTA 500 (500–576)
-# 8 500 - INTERN-SJP (500–576)
-# 9 500 - CURTA-SJP (500–576)
-# 10 500 - SUPER LONGA-SJP (500–576)
-# 11 500 - LONGA-SJP (500–576)
-# 12 500 - MEDIA-SJP (500–576)
-
-SECTION_LABELS_SJP = [
-    "LONGA MT-GO-DF-TO",
-    "SUPER CURTA",
-    "SUPER-LONGA MA-PA-AC-RO",
-    "MEDIA SP - RJ - MS",
-    "CURTA - PR - PORTO",
-    "INTERNACIONAL",
-    "SUPER CURTA 500",
-    "500 - INTERN-SJP",
-    "500 - CURTA-SJP",
-    "500 - SUPER LONGA-SJP",
-    "500 - LONGA-SJP",
-    "500 - MEDIA-SJP",
-]
-
-SECTION_TITLES_SJP_REGEX = [
-    r"LONGA\s+MT-?GO-?DF-?TO",
-    r"SUPER\s+CURTA(?!\s*500)",  # evita capturar a seção 500
-    r"SUPER[-\s]*LONGA\s+MA-?PA-?AC-?RO",
-    r"MEDIA\s+SP\s*-\s*RJ\s*-\s*MS",
-    r"CURTA\s*-\s*PR\s*-\s*PORTO",
-    r"INTERNACIONAL(?!\s*500)",  # evita capturar "500 - INTERN-SJP"
-    r"SUPER\s+CURTA\s*500",
-    r"500\s*-\s*INTERN-?SJP",
-    r"500\s*-\s*CURTA-?SJP",
-    r"500\s*-\s*SUPER\s*LONGA-?SJP",
-    r"500\s*-\s*LONGA-?SJP",
-    r"500\s*-\s*MEDIA-?SJP",
-]
-SECTION_PATTERNS_SJP = [re.compile(p, re.IGNORECASE) for p in SECTION_TITLES_SJP_REGEX]
-
-PATTERN_SEQ_INTERNO_FROTA_SJP = re.compile(
-    r'(?:\bSIM\b\s+)?\b\d+\b\s+\b\d+\.\d+\b\s+(\d{2,6})\b',
-    re.IGNORECASE
-)
-PATTERN_ISOLATED_NUM_SJP = re.compile(r'(?<!\.)\b\d{2,6}\b(?!\.)')
 
 def split_text_into_sections_sjp(text: str):
     positions = []
@@ -865,9 +671,8 @@ def extract_orders_sjp_from_text(text: str):
     return out[:n_sections]
 
 def extract_sjp_from_uploaded_pdf(uploaded_pdf):
-    pdf_bytes = uploaded_pdf.read()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(pdf_bytes)
+        tmp.write(uploaded_pdf.read())
         tmp_path = tmp.name
     try:
         text = extract_text(tmp_path)
@@ -876,10 +681,110 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
             os.remove(tmp_path)
         except Exception:
             pass
-    orders = extract_orders_sjp_from_text(text)
-    meta = extract_meta_from_text(text)
-    return orders, meta
 
+    orders = extract_orders_sjp_from_text(text)
+    meta_by_section = extract_meta_sjp_by_section(text)
+    return orders, meta_by_section
+
+# --------------------------- META (Motorista e Últ. Viag.) por fila ---------------------------
+
+UF_TOKEN = re.compile(r"^[A-Z]{2}$")
+
+def _parse_meta_line_for_frota(line: str):
+    """Extrai (frota, data_ult_viag, motorista) de uma linha do PDF.
+    Retorna (None, None, None) se não conseguir detectar.
+    """
+    if not line:
+        return None, None, None
+
+    # Procura padrão: <FROTA> <DD/MM/AAAA> <MOTORISTA ...> <UF> ...
+    m = re.search(r"\b(\d{2,6})\b\s+(\d{2}/\d{2}/\d{4})\s+(.+)$", line.strip())
+    if not m:
+        return None, None, None
+
+    frota = m.group(1)
+    data = m.group(2)
+    rest = m.group(3).strip()
+
+    # Motorista vai até o primeiro token UF (2 letras) — ex: AC, DF, GO...
+    toks = rest.split()
+    uf_idx = None
+    for i, t in enumerate(toks):
+        if UF_TOKEN.match(t):
+            uf_idx = i
+            break
+
+    if uf_idx is None:
+        motorista = "NA"
+    else:
+        motorista = " ".join(toks[:uf_idx]).strip() or "NA"
+
+    return frota, data, motorista
+
+def extract_meta_rj_by_section(text: str):
+    """Retorna uma lista de dicts (1 por seção RJ) mapeando frota -> {motorista, ult_viag}."""
+    meta = [dict() for _ in range(len(SECTION_TITLES_RJ))]
+    if not text:
+        return meta
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    current_sec_index = None
+
+    for line in lines:
+        for pattern, idx in SEC_PATTERNS_RJ:
+            if pattern.search(line):
+                current_sec_index = idx
+                break
+        if current_sec_index is None or current_sec_index >= len(meta):
+            continue
+
+        frota, data, motorista = _parse_meta_line_for_frota(line)
+        if not frota:
+            continue
+
+        # só registra se frota for válida (200-470 ou 500-576)
+        try:
+            n_norm = str(int(frota))
+        except Exception:
+            continue
+        if n_norm not in FROTAS_VALIDAS_STR:
+            continue
+
+        meta[current_sec_index][n_norm] = {"motorista": motorista or "NA", "ult_viag": data or "NA"}
+
+    return meta
+
+def extract_meta_sjp_by_section(text: str):
+    """Retorna uma lista de dicts (1 por seção SJP/PR) mapeando frota -> {motorista, ult_viag}."""
+    meta = [dict() for _ in range(len(SECTION_LABELS_SJP))]
+    if not text:
+        return meta
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    current_sec_index = None
+
+    for line in lines:
+        for idx, pat in enumerate(SECTION_PATTERNS_SJP):
+            if pat.search(line):
+                current_sec_index = idx
+                break
+        if current_sec_index is None or current_sec_index >= len(meta):
+            continue
+
+        frota, data, motorista = _parse_meta_line_for_frota(line)
+        if not frota:
+            continue
+
+        try:
+            n_norm = str(int(frota))
+        except Exception:
+            continue
+        if n_norm not in FROTAS_VALIDAS_STR:
+            continue
+
+        meta[current_sec_index][n_norm] = {"motorista": motorista or "NA", "ult_viag": data or "NA"}
+
+    return meta
 def normalize_fleet_list(raw: str):
     partes = [p.strip() for p in (raw or "").split(",") if p.strip()]
     normalized = []
@@ -891,7 +796,8 @@ def normalize_fleet_list(raw: str):
 def reset_state_preserve_filial():
     defaults = {
         "orders": [],
-        "meta": {},
+        "meta_by_section": [],
+        "pdf_loaded": False,
         "queue_super_longa": [],
         "queue_longa": [],
         "queue_media": [],
@@ -1233,18 +1139,18 @@ def main():
 
     st.sidebar.markdown("## 📌 Navegação")
     if st.sidebar.button("Voltar ao início"):
-        st.session_state.filial = None
+        reset_state_preserve_filial()
         st.rerun()
 
     st.markdown(f"### Filial selecionada: **{filial}**")
 
-    tabs = ["📄 Arquivo", "🔎 Consulta", "🧾 Selecionar & Montar", "✔ Gestão & Relatório", "🕓 Histórico"]
+    tabs = ["📄 Arquivo", "🧾 Selecionar & Montar", "🔎 Consulta", "✔ Gestão & Relatório", "🕓 Histórico"]
     is_admin = user in ADMIN_USERS
     if is_admin:
         tabs.append("👥 Usuários")
 
     tab_list = st.tabs(tabs)
-    tab_arquivo, tab_consulta, tab_select, tab_ops, tab_hist = tab_list[:5]
+    tab_arquivo, tab_select, tab_consulta, tab_ops, tab_hist = tab_list[:5]
     tab_users = tab_list[5] if is_admin else None
 
     with tab_arquivo:
@@ -1256,17 +1162,18 @@ def main():
                 st.warning("Selecione um arquivo PDF primeiro.")
             else:
                 if filial == "RJ":
-                    orders, meta = extract_rj_from_uploaded_pdf(uploaded_pdf)
+                    orders, meta_by_section = extract_rj_from_uploaded_pdf(uploaded_pdf)
                     section_labels = SECTION_TITLES_RJ
                 else:
-                    orders, meta = extract_sjp_from_uploaded_pdf(uploaded_pdf)
+                    orders, meta_by_section = extract_sjp_from_uploaded_pdf(uploaded_pdf)
                     section_labels = SECTION_LABELS_SJP
 
                 if not orders or all(len(o) == 0 for o in orders):
                     st.error("Não foi possível ler o arquivo (nenhuma frota identificada).")
                 else:
                     st.session_state.orders = orders
-                    st.session_state.meta = meta
+                    st.session_state.meta_by_section = meta_by_section
+                    st.session_state.pdf_loaded = True
                     st.session_state.queue_super_longa = []
                     st.session_state.queue_longa = []
                     st.session_state.queue_media = []
@@ -1298,52 +1205,6 @@ def main():
                             rows.append({"Seção": sec_name, "Posição": pos, "Frota": frota})
                     if rows:
                         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-
-    with tab_consulta:
-        st.subheader("Consulta (posição, motorista e última viagem)")
-        if not st.session_state.get("orders") or all(len(o) == 0 for o in st.session_state.orders):
-            st.info("Primeiro leia o PDF na aba **Arquivo**.")
-        else:
-            meta = st.session_state.get("meta", {}) or {}
-            # Monta tabela base com todas as frotas lidas no PDF (ordem e seção)
-            rows = []
-            section_labels = SECTION_TITLES_RJ if filial == "RJ" else SECTION_LABELS_SJP
-            for sec_idx, sec_list in enumerate(st.session_state.orders):
-                sec_name = section_labels[sec_idx] if sec_idx < len(section_labels) else f"Seção {sec_idx+1}"
-                for posi, frota in enumerate(sec_list or [], start=1):
-                    frota_str = str(frota)
-                    mrec = (meta.get(frota_str, {}) or {}).get(sec_idx, {})
-                    rows.append({
-                        "Seção": sec_name,
-                        "Posição": posi,
-                        "Frota": frota_str,
-                        "Motorista": mrec.get("motorista", "NA"),
-                        "Ult. Viag.": mrec.get("ult_viag", "NA"),
-                    })
-
-            dfc = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Seção","Posição","Frota","Motorista","Ult. Viag."])
-
-            c1, c2 = st.columns([1,1])
-            with c1:
-                q_frota = st.text_input("Filtrar por frota (ex: 252)", value="").strip()
-            with c2:
-                q_sec = st.selectbox("Filtrar por seção", ["(todas)"] + sorted(dfc["Seção"].unique().tolist()) if not dfc.empty else ["(todas)"])
-
-            if q_frota:
-                digits = re.sub(r"\D", "", q_frota)
-                if digits:
-                    dfc = dfc[dfc["Frota"] == str(int(digits))]
-            if q_sec and q_sec != "(todas)":
-                dfc = dfc[dfc["Seção"] == q_sec]
-
-            st.dataframe(dfc, hide_index=True, use_container_width=True)
-            st.download_button(
-                "Baixar consulta (CSV)",
-                data=dfc.to_csv(index=False).encode("utf-8"),
-                file_name="consulta.csv",
-                mime="text/csv",
-            )
 
     with tab_select:
         st.subheader("Montagem das Filas")
@@ -1448,6 +1309,69 @@ def main():
 
         if st.session_state.get("mode_shared") and st.session_state.get("orders"):
             persist_to_shared(filial)
+
+
+
+    with tab_consulta:
+        st.subheader("Consulta (posição, motorista e última viagem)")
+        st.caption("⚠️ Para consultar, primeiro leia o PDF na aba **Arquivo** (botão **Ler PDF**).")
+
+        if not st.session_state.get("pdf_loaded") or not st.session_state.get("orders"):
+            st.info("Leia o PDF primeiro para habilitar a consulta.")
+        else:
+            raw_q = st.text_input("Digite a frota para consultar", key="consulta_frota")
+            if st.button("Consultar", type="primary"):
+                digits = re.sub(r"\D", "", raw_q or "")
+                if not digits:
+                    st.warning("Digite uma frota válida.")
+                else:
+                    frota_q = str(int(digits))
+
+                    orders = st.session_state.get("orders", [])
+                    meta_by_section = st.session_state.get("meta_by_section", []) or []
+
+                    if filial == "RJ":
+                        labels = SECTION_TITLES_RJ
+                        split_idx = 5
+                    else:
+                        labels = SECTION_LABELS_SJP
+                        split_idx = 6
+
+                    rows = []
+                    for sec_idx, sec_list in enumerate(orders):
+                        if sec_idx >= len(labels):
+                            continue
+                        label = labels[sec_idx]
+                        group = "Frotas Principais" if sec_idx < split_idx else "Frotas Extras"
+
+                        pos_geral = ""
+                        try:
+                            pos_geral = (sec_list.index(frota_q) + 1) if frota_q in sec_list else ""
+                        except Exception:
+                            pos_geral = ""
+
+                        meta_rec = {}
+                        if sec_idx < len(meta_by_section):
+                            meta_rec = (meta_by_section[sec_idx] or {}).get(frota_q, {}) or {}
+
+                        motorista = meta_rec.get("motorista", "NA")
+                        ult_viag = meta_rec.get("ult_viag", "NA")
+
+                        # Mostra todas as filas, mesmo se frota não estiver: só inclui linha se encontrou algo (posição ou meta)
+                        if pos_geral != "" or motorista != "NA" or ult_viag != "NA":
+                            rows.append({
+                                "Grupo": group,
+                                "Seção/Fila": label,
+                                "Posição geral": pos_geral,
+                                "Motorista": motorista,
+                                "Últ. viag.": ult_viag,
+                            })
+
+                    if not rows:
+                        st.warning(f"Frota {frota_q} não encontrada no PDF lido (ou sem dados disponíveis).")
+                    else:
+                        dfc = pd.DataFrame(rows)
+                        st.dataframe(dfc, hide_index=True, use_container_width=True)
 
 
 
