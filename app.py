@@ -504,17 +504,21 @@ PATTERN_SEQ_INTERNO_FROTA_RJ = re.compile(
 PATTERN_ISOLATED_NUM_RJ = re.compile(r'(?<!\.)\b\d{2,6}\b(?!\.)')
 
 def extract_orders_rj_from_text(text: str):
+    # Número de seções no PDF do RJ (inclui blocos "500 - ...")
+    n_sections = len(SECTION_TITLES_RJ) if "SECTION_TITLES_RJ" in globals() else 5
+
     if not text:
-        return [[] for _ in range(5)]
+        return [[] for _ in range(n_sections)]
+
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    sections = [[] for _ in range(5)]
+    sections = [[] for _ in range(n_sections)]
     current_sec_index = None
     for line in lines:
         for pattern, idx in SEC_PATTERNS_RJ:
             if pattern.search(line):
                 current_sec_index = idx
                 break
-        if current_sec_index is None:
+        if current_sec_index is None or current_sec_index >= n_sections:
             continue
 
         m = PATTERN_SEQ_INTERNO_FROTA_RJ.search(line)
