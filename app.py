@@ -605,6 +605,59 @@ def extract_rj_from_uploaded_pdf(uploaded_pdf):
     meta = extract_meta_from_text(text)
     return orders, meta
 
+# --------------------------- SJP (PR) — seções do PDF (principais + extras) ---------------------------
+
+# Ordem esperada no PDF (12 seções):
+# 1 LONGA (200–470)
+# 2 SUPER CURTA (200–470)
+# 3 SUPER-LONGA (200–470)
+# 4 MÉDIA (200–470)
+# 5 CURTA (200–470)
+# 6 INTERNACIONAL (200–470)
+# 7 SUPER CURTA 500 (500–576)
+# 8 500 - INTERN-SJP (500–576)
+# 9 500 - CURTA-SJP (500–576)
+# 10 500 - SUPER LONGA-SJP (500–576)
+# 11 500 - LONGA-SJP (500–576)
+# 12 500 - MEDIA-SJP (500–576)
+
+SECTION_LABELS_SJP = [
+    "LONGA MT-GO-DF-TO",
+    "SUPER CURTA",
+    "SUPER-LONGA MA-PA-AC-RO",
+    "MEDIA SP - RJ - MS",
+    "CURTA - PR - PORTO",
+    "INTERNACIONAL",
+    "SUPER CURTA 500",
+    "500 - INTERN-SJP",
+    "500 - CURTA-SJP",
+    "500 - SUPER LONGA-SJP",
+    "500 - LONGA-SJP",
+    "500 - MEDIA-SJP",
+]
+
+SECTION_TITLES_SJP_REGEX = [
+    r"LONGA\s+MT-?GO-?DF-?TO",
+    r"SUPER\s+CURTA(?!\s*500)",  # evita capturar a seção 500
+    r"SUPER[-\s]*LONGA\s+MA-?PA-?AC-?RO",
+    r"MEDIA\s+SP\s*-\s*RJ\s*-\s*MS",
+    r"CURTA\s*-\s*PR\s*-\s*PORTO",
+    r"INTERNACIONAL(?!\s*500)",  # evita capturar "500 - INTERN-SJP"
+    r"SUPER\s+CURTA\s*500",
+    r"500\s*-\s*INTERN-?SJP",
+    r"500\s*-\s*CURTA-?SJP",
+    r"500\s*-\s*SUPER\s*LONGA-?SJP",
+    r"500\s*-\s*LONGA-?SJP",
+    r"500\s*-\s*MEDIA-?SJP",
+]
+SECTION_PATTERNS_SJP = [re.compile(p, re.IGNORECASE) for p in SECTION_TITLES_SJP_REGEX]
+
+PATTERN_SEQ_INTERNO_FROTA_SJP = re.compile(
+    r'(?:\bSIM\b\s+)?\b\d+\b\s+\b\d+\.\d+\b\s+(\d{2,6})\b',
+    re.IGNORECASE
+)
+PATTERN_ISOLATED_NUM_SJP = re.compile(r'(?<!\.)\b\d{2,6}\b(?!\.)')
+
 def split_text_into_sections_sjp(text: str):
     positions = []
     for pat in SECTION_PATTERNS_SJP:
