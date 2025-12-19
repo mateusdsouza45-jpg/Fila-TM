@@ -33,6 +33,8 @@ CSS = """
   --longa:#f59e0b;  /* amber */
   --media:#3b82f6;  /* blue */
   --curta:#10b981;  /* green */
+  --intern:#a855f7; /* purple */
+  --supercurta:#94a3b8; /* slate */
 }
 
 .block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; }
@@ -80,6 +82,8 @@ div[data-testid="stSidebar"] > div:first-child{
 .dot.longa{ background: var(--longa); }
 .dot.media{ background: var(--media); }
 .dot.curta{ background: var(--curta); }
+.dot.intern{ background: var(--intern); }
+.dot.supercurta{ background: var(--supercurta); }
 
 .table-wrap{
   border-radius: 14px;
@@ -249,17 +253,43 @@ def _users_save(data: dict) -> None:
 
 
 def ensure_admin_user():
-    """Garante que o usuário admin exista (mesmo se não tiver cadastro)."""
-    ADMIN_USERNAME = "mateus.s"
-    ADMIN_PASSWORD = "110824"  # troque se quiser
+    """Garante usuários iniciais existirem.
+    - Admin fixo: mateus.souza
+    - Usuários comuns iniciais: denis, henrique
+    Observação: aqui a senha do admin é forçada para garantir que esteja correta.
+    """
+    SEED_USERS = [
+        {"username": "mateus.souza", "password": "Start@@2016", "force_password": True},
+        {"username": "denis", "password": "112233", "force_password": False},
+        {"username": "henrique", "password": "112233", "force_password": False},
+    ]
+
     db = _users_load()
-    users = db.get("users", {})
-    if ADMIN_USERNAME not in users:
-        users[ADMIN_USERNAME] = _hash_password(ADMIN_PASSWORD)
+    users = db.get("users", {}) or {}
+
+    changed = False
+    for item in SEED_USERS:
+        uname = (item.get("username") or "").strip().lower()
+        pwd = item.get("password") or ""
+        force = bool(item.get("force_password"))
+
+        if not uname:
+            continue
+
+        if uname not in users:
+            users[uname] = _hash_password(pwd)
+            changed = True
+        elif force:
+            # garante que o admin esteja com a senha definida acima
+            users[uname] = _hash_password(pwd)
+            changed = True
+
+    if changed:
         db["users"] = users
         _users_save(db)
 
-ADMIN_USERS = {"mateus.s"}  # usuários admin fixos
+
+ADMIN_USERS = {"mateus.souza"}  # usuários admin fixos  # usuários admin fixos
 
 def auth_screen() -> str:
     """Tela inicial: somente LOGIN (1 sessão por usuário). Criação de usuários é feita pelo admin."""
@@ -357,48 +387,100 @@ def persist_to_shared(filial: str):
     state = shared_load()
     state[filial] = {
         "orders": st.session_state.orders,
+
+        # principais
         "queue_super_longa": st.session_state.queue_super_longa,
         "queue_longa": st.session_state.queue_longa,
         "queue_media": st.session_state.queue_media,
         "queue_curta": st.session_state.queue_curta,
-        "queue_super_longa_extra": st.session_state.queue_super_longa_extra,
-        "queue_longa_extra": st.session_state.queue_longa_extra,
-        "queue_media_extra": st.session_state.queue_media_extra,
-        "queue_curta_extra": st.session_state.queue_curta_extra,
-        "queue_internacional": st.session_state.queue_internacional,
-        "queue_internacional_extra": st.session_state.queue_internacional_extra,
-        "queue_super_curta": st.session_state.queue_super_curta,
-        "queue_super_curta_extra": st.session_state.queue_super_curta_extra,
+        "queue_internacional": st.session_state.get("queue_internacional", []),
+        "queue_super_curta": st.session_state.get("queue_super_curta", []),
         "selected_fleets": st.session_state.selected_fleets,
+
+        # extras / 500
+        "queue_super_longa_500": st.session_state.get("queue_super_longa_500", []),
+        "queue_longa_500": st.session_state.get("queue_longa_500", []),
+        "queue_media_500": st.session_state.get("queue_media_500", []),
+        "queue_curta_500": st.session_state.get("queue_curta_500", []),
+        "queue_internacional_500": st.session_state.get("queue_internacional_500", []),
+        "queue_super_curta_500": st.session_state.get("queue_super_curta_500", []),
+        "selected_fleets_500": st.session_state.get("selected_fleets_500", []),
+
+        # comuns
         "frotas_destacadas": st.session_state.frotas_destacadas,
         "frotas_removidas": sorted(list(st.session_state.frotas_removidas)),
         "registro_pegaram_carga": st.session_state.registro_pegaram_carga,
         "registro_excluidas": st.session_state.registro_excluidas,
+        "include_rest": st.session_state.get("include_rest", False),
     }
     shared_save(state)
+
 
 def load_from_shared(filial: str):
     state = shared_load().get(filial, {})
     if not state:
         return
+
     st.session_state.orders = state.get("orders", [])
+
+    # principais
     st.session_state.queue_super_longa = state.get("queue_super_longa", [])
     st.session_state.queue_longa = state.get("queue_longa", [])
     st.session_state.queue_media = state.get("queue_media", [])
     st.session_state.queue_curta = state.get("queue_curta", [])
-    st.session_state.queue_super_longa_extra = state.get("queue_super_longa_extra", [])
-    st.session_state.queue_longa_extra = state.get("queue_longa_extra", [])
-    st.session_state.queue_media_extra = state.get("queue_media_extra", [])
-    st.session_state.queue_curta_extra = state.get("queue_curta_extra", [])
     st.session_state.queue_internacional = state.get("queue_internacional", [])
-    st.session_state.queue_internacional_extra = state.get("queue_internacional_extra", [])
     st.session_state.queue_super_curta = state.get("queue_super_curta", [])
-    st.session_state.queue_super_curta_extra = state.get("queue_super_curta_extra", [])
     st.session_state.selected_fleets = state.get("selected_fleets", [])
+
+    # extras / 500
+    st.session_state.queue_super_longa_500 = state.get("queue_super_longa_500", [])
+    st.session_state.queue_longa_500 = state.get("queue_longa_500", [])
+    st.session_state.queue_media_500 = state.get("queue_media_500", [])
+    st.session_state.queue_curta_500 = state.get("queue_curta_500", [])
+    st.session_state.queue_internacional_500 = state.get("queue_internacional_500", [])
+    st.session_state.queue_super_curta_500 = state.get("queue_super_curta_500", [])
+    st.session_state.selected_fleets_500 = state.get("selected_fleets_500", [])
+
+    # comuns
     st.session_state.frotas_destacadas = state.get("frotas_destacadas", [])
     st.session_state.frotas_removidas = set(state.get("frotas_removidas", []))
     st.session_state.registro_pegaram_carga = state.get("registro_pegaram_carga", [])
     st.session_state.registro_excluidas = state.get("registro_excluidas", [])
+    st.session_state.include_rest = state.get("include_rest", False)
+
+
+
+# --------------------------- AJUSTE DE LEITURA (PÁGINAS DAS FROTAS 500) ---------------------------
+# No PDF do RJ, as frotas 500 começam a partir da página 21 (1-based).
+# No PDF do PR/SJP, as frotas 500 começam a partir da página 25 (1-based).
+RJ_500_START_PAGE_1BASED = 21
+PR_500_START_PAGE_1BASED = 25
+
+def _pdf_page_count(path: str) -> int:
+    """Conta páginas do PDF (para podermos cortar a leitura por faixa)."""
+    try:
+        from pdfminer.pdfpage import PDFPage
+        with open(path, "rb") as f:
+            return sum(1 for _ in PDFPage.get_pages(f))
+    except Exception:
+        return 0
+
+def _extract_text_pages(path: str, start_0: int, end_0_exclusive: int | None = None) -> str:
+    """Extrai texto do PDF somente de um intervalo de páginas (0-based)."""
+    page_count = _pdf_page_count(path) or 0
+    if page_count <= 0:
+        return extract_text(path)
+    start_0 = max(0, int(start_0))
+    end_0_exclusive = page_count if end_0_exclusive is None else max(0, int(end_0_exclusive))
+    end_0_exclusive = min(end_0_exclusive, page_count)
+    if start_0 >= end_0_exclusive:
+        return ""
+    pages = list(range(start_0, end_0_exclusive))
+    try:
+        return extract_text(path, page_numbers=pages)
+    except TypeError:
+        # pdfminer antigo pode não suportar page_numbers; cai no modo padrão
+        return extract_text(path)
 
 # =============================================================================
 #                           SEU APP (parsing e filas)
@@ -413,14 +495,10 @@ FROTAS_VALIDAS = {
     405,406,407,408,409,410,411,412,413,414,415,416,417,418,419,420,
     421,422,423,424,425,426,427,428,429,430,431,432,433,434,435,436,
     437,438,439,440,451,452,453,454,455,456,457,458,459,460,461,462,
-    463,464,466,467,468,469,470
+    463,464,466,467,468,469,470,
+    501,502,503,504,505,506,507,508,509,510,511,512,513,514,515,516,517,518,519,520,521,522,523,524,525,526,527,528,529,530,531,532,533,534,535,536,537,538,539,540,541,542,543,544,545,546,547,548,549,550,551,552,553,554,555,556,557,558,559,560,561,562,563,564,565,566,567,568,569,570,571,572,573,574,575,576
 }
 FROTAS_VALIDAS_STR = {str(x) for x in FROTAS_VALIDAS}
-
-# Frotas extras (grupo 500)
-FROTAS_500_VALIDAS = set(range(501, 577))
-FROTAS_500_VALIDAS_STR = {str(x) for x in FROTAS_500_VALIDAS}
-
 
 SECTION_TITLES_RJ = [
     "INTER - RESENDE",
@@ -429,27 +507,27 @@ SECTION_TITLES_RJ = [
     "MEDIA RESENDE",
     "CURTA - RESENDE",
     "500 - INTER - RESENDE",
-    "500 - SUPER LONGA - RESENDE",
-    "500 - LONGA - RESENDE",
-    "500 - MEDIA - RESENDE",
-    "500 - CURTA - RESENDE",
+    "500 - SUPER LONGA-RESENDE",
+    "500 - LONGA-RESENDE",
+    "500 - MEDIA-RESENDE",
+    "500 - CURTA-RESENDE",
 ]
 
 
 SEC_PATTERNS_RJ = [
     (re.compile(r"INTER\s*-\s*RESENDE", re.IGNORECASE), 0),
     (re.compile(r"SUPER\s*LONGA\s*-\s*RESENDE", re.IGNORECASE), 1),
-    (re.compile(r"\bLONGA\s*-\s*RESENDE\b", re.IGNORECASE), 2),
+    (re.compile(r"LONGA\s*-\s*RESENDE", re.IGNORECASE), 2),
     (re.compile(r"MEDIA\s*RESENDE", re.IGNORECASE), 3),
     (re.compile(r"CURTA\s*-\s*RESENDE", re.IGNORECASE), 4),
 
-    # Bloco 500 (aceita variações com/sem hífen)
     (re.compile(r"500\s*-\s*INTER\s*-\s*RESENDE", re.IGNORECASE), 5),
-    (re.compile(r"500\s*-\s*SUPER\s*LONGA\s*-\s*RESENDE", re.IGNORECASE), 6),
-    (re.compile(r"500\s*-\s*LONGA\s*-\s*RESENDE", re.IGNORECASE), 7),
-    (re.compile(r"500\s*-\s*MEDIA\s*-\s*RESENDE", re.IGNORECASE), 8),
-    (re.compile(r"500\s*-\s*CURTA\s*-\s*RESENDE", re.IGNORECASE), 9),
+    (re.compile(r"500\s*-\s*SUPER\s*LONGA\s*-?\s*RESENDE", re.IGNORECASE), 6),
+    (re.compile(r"500\s*-\s*LONGA\s*-?\s*RESENDE", re.IGNORECASE), 7),
+    (re.compile(r"500\s*-\s*MEDIA\s*-?\s*RESENDE", re.IGNORECASE), 8),
+    (re.compile(r"500\s*-\s*CURTA\s*-?\s*RESENDE", re.IGNORECASE), 9),
 ]
+
 
 
 PATTERN_SEQ_INTERNO_FROTA_RJ = re.compile(
@@ -459,27 +537,28 @@ PATTERN_SEQ_INTERNO_FROTA_RJ = re.compile(
 PATTERN_ISOLATED_NUM_RJ = re.compile(r'(?<!\.)\b\d{2,6}\b(?!\.)')
 
 def extract_orders_rj_from_text(text: str):
+    # Número de seções no PDF do RJ (inclui blocos "500 - ...")
+    n_sections = len(SECTION_TITLES_RJ) if "SECTION_TITLES_RJ" in globals() else 5
+
     if not text:
-        return [[] for _ in range(10)]
+        return [[] for _ in range(n_sections)]
+
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    sections = [[] for _ in range(10)]
+    sections = [[] for _ in range(n_sections)]
     current_sec_index = None
     for line in lines:
         for pattern, idx in SEC_PATTERNS_RJ:
             if pattern.search(line):
                 current_sec_index = idx
                 break
-        if current_sec_index is None:
+        if current_sec_index is None or current_sec_index >= n_sections:
             continue
-
-        # Seção 0-4: frotas principais (200-470). Seção 5-9: frotas extras (501-576).
-        allowed_set = FROTAS_500_VALIDAS_STR if current_sec_index >= 5 else FROTAS_VALIDAS_STR
 
         m = PATTERN_SEQ_INTERNO_FROTA_RJ.search(line)
         if m:
             frota_cand = m.group(1)
             n_norm = str(int(frota_cand))
-            if n_norm in allowed_set and n_norm not in sections[current_sec_index]:
+            if n_norm in FROTAS_VALIDAS_STR and n_norm not in sections[current_sec_index]:
                 sections[current_sec_index].append(n_norm)
             continue
 
@@ -491,7 +570,7 @@ def extract_orders_rj_from_text(text: str):
                     n_norm = str(int(n))
                 except Exception:
                     continue
-                if n_norm in allowed_set:
+                if n_norm in FROTAS_VALIDAS_STR:
                     chosen = n_norm
                     break
             if chosen and chosen not in sections[current_sec_index]:
@@ -503,53 +582,25 @@ def extract_rj_from_uploaded_pdf(uploaded_pdf):
         tmp.write(uploaded_pdf.read())
         tmp_path = tmp.name
     try:
-        text = extract_text(tmp_path)
+        # Separa texto principal e texto das frotas 500 por página.
+        # Página informada pelo usuário é 1-based → converte para 0-based.
+        start_0 = max(0, RJ_500_START_PAGE_1BASED - 1)
+        page_count = _pdf_page_count(tmp_path) or 0
+
+        if page_count > 0 and start_0 < page_count:
+            text_main = _extract_text_pages(tmp_path, 0, start_0)
+            text_extra = _extract_text_pages(tmp_path, start_0, None)
+            text = (text_main or "") + "\n\n" + (text_extra or "")
+        else:
+            # fallback (caso não consiga contar páginas)
+            text = extract_text(tmp_path)
     finally:
         try:
             os.remove(tmp_path)
         except Exception:
             pass
+
     return extract_orders_rj_from_text(text)
-
-SECTION_LABELS_SJP = [
-    "LONGA MT-GO-DF-TO",
-    "SUPER CURTA",
-    "SUPER-LONGA MA-PA-AC-RO",
-    "MEDIA SP - RJ - MS",
-    "CURTA - PR - PORTO",
-    "INTERNACIONAL",
-    "SUPER CURTA 500",
-    "500 - INTERN-SJP",
-    "500 - CURTA-SJP",
-    "500 - SUPER LONGA-SJP",
-    "500 - LONGA-SJP",
-    "500 - MEDIA-SJP",
-]
-
-
-SECTION_TITLES_SJP_REGEX = [
-    r"LONGA\s+MT-?GO-?DF-?TO",
-    r"SUPER\s+CURTA",
-    r"SUPER[-\s]*LONGA\s+MA-?PA-?AC-?RO",
-    r"MEDIA\s+SP\s*-\s*RJ\s*-\s*MS",
-    r"CURTA\s*-\s*PR\s*-\s*PORTO",
-    r"INTERNACIONAL",
-    # Bloco 500
-    r"SUPER\s+CURTA\s*500",
-    r"500\s*-\s*INTERN[-\s]*SJP",
-    r"500\s*-\s*CURTA[-\s]*SJP",
-    r"500\s*-\s*SUPER\s*LONGA[-\s]*SJP",
-    r"500\s*-\s*LONGA[-\s]*SJP",
-    r"500\s*-\s*MEDIA[-\s]*SJP",
-]
-
-SECTION_PATTERNS_SJP = [re.compile(p, re.IGNORECASE) for p in SECTION_TITLES_SJP_REGEX]
-
-PATTERN_SEQ_INTERNO_FROTA_SJP = re.compile(
-    r'(?:\bSIM\b\s+)?\b\d+\b\s+\b\d+\.\d+\b\s+(\d{2,6})\b',
-    re.IGNORECASE
-)
-PATTERN_ISOLATED_NUM_SJP = re.compile(r'(?<!\.)\b\d{2,6}\b(?!\.)')
 
 def split_text_into_sections_sjp(text: str):
     positions = []
@@ -570,7 +621,7 @@ def split_text_into_sections_sjp(text: str):
         blocks[idx] = blk
     return blocks
 
-def extract_fleets_from_block_sjp(block_text: str, allowed_set: set[str]):
+def extract_fleets_from_block_sjp(block_text: str):
     ordered = []
     seen = set()
     for line in block_text.splitlines():
@@ -584,7 +635,7 @@ def extract_fleets_from_block_sjp(block_text: str, allowed_set: set[str]):
                 n_norm = str(int(frota_cand))
             except Exception:
                 n_norm = None
-            if n_norm and n_norm in allowed_set and n_norm not in seen:
+            if n_norm and n_norm in FROTAS_VALIDAS_STR and n_norm not in seen:
                 seen.add(n_norm)
                 ordered.append(n_norm)
             continue
@@ -597,7 +648,7 @@ def extract_fleets_from_block_sjp(block_text: str, allowed_set: set[str]):
                     n_norm = str(int(n))
                 except Exception:
                     continue
-                if n_norm in allowed_set:
+                if n_norm in FROTAS_VALIDAS_STR:
                     chosen = n_norm
                     break
             if chosen and chosen not in seen:
@@ -620,26 +671,28 @@ def extract_orders_sjp_from_text(text: str):
                     seen.add(n_norm)
                     fallback.append(n_norm)
         return [fallback for _ in range(len(SECTION_LABELS_SJP))]
-    orders = []
-    for i, blk in enumerate(blocks):
-        if not blk:
-            orders.append([])
-            continue
-        allowed = FROTAS_500_VALIDAS_STR if i >= 6 else FROTAS_VALIDAS_STR
-        orders.append(extract_fleets_from_block_sjp(blk, allowed))
-    return orders
+    return [extract_fleets_from_block_sjp(blk) if blk else [] for blk in blocks]
 
 def extract_sjp_from_uploaded_pdf(uploaded_pdf):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_pdf.read())
         tmp_path = tmp.name
     try:
-        text = extract_text(tmp_path)
+        start_0 = max(0, PR_500_START_PAGE_1BASED - 1)
+        page_count = _pdf_page_count(tmp_path) or 0
+
+        if page_count > 0 and start_0 < page_count:
+            text_main = _extract_text_pages(tmp_path, 0, start_0)
+            text_extra = _extract_text_pages(tmp_path, start_0, None)
+            text = (text_main or "") + "\n\n" + (text_extra or "")
+        else:
+            text = extract_text(tmp_path)
     finally:
         try:
             os.remove(tmp_path)
         except Exception:
             pass
+
     return extract_orders_sjp_from_text(text)
 
 def normalize_fleet_list(raw: str):
@@ -657,14 +710,15 @@ def reset_state_preserve_filial():
         "queue_longa": [],
         "queue_media": [],
         "queue_curta": [],
-        "queue_super_longa_extra": [],
-        "queue_longa_extra": [],
-        "queue_media_extra": [],
-        "queue_curta_extra": [],
         "queue_internacional": [],
-        "queue_internacional_extra": [],
         "queue_super_curta": [],
-        "queue_super_curta_extra": [],
+        "queue_super_longa_500": [],
+        "queue_longa_500": [],
+        "queue_media_500": [],
+        "queue_curta_500": [],
+        "queue_internacional_500": [],
+        "queue_super_curta_500": [],
+        "selected_fleets_500": [],
         "selected_fleets": [],
         "frotas_destacadas": [],
         "frotas_removidas": set(),
@@ -672,6 +726,7 @@ def reset_state_preserve_filial():
         "registro_excluidas": [],
         "generated_pdf_bytes": None,
         "generated_pdf_filename": None,
+        "include_rest": False,
         "mode_shared": True,
         "filial": None,
     }
@@ -691,23 +746,33 @@ def _queue_card_header(title: str, count: int, dot_class: str):
 def _queue_card_footer():
     st.markdown("</div>", unsafe_allow_html=True)
 
-def show_queue(title: str, queue_list, dot_class: str, filial: str, group: str = "main"):
+
+def show_queue(title: str, queue_list, dot_class: str, filial: str, group: str, kind: str):
+    """Mostra uma fila em card, com:
+    - Posição = posição dentro da fila montada (1..N)
+    - Posição geral = posição lida no PDF dentro da SEÇÃO correspondente (1..N)
+    group: 'main' (Frotas Principais) | 'extra' (Frotas Extras/500)
+    kind : 'super'|'longa'|'media'|'curta'|'intern'|'supercurta'
+    """
     _queue_card_header(title, len(queue_list or []), dot_class)
     if not queue_list:
         st.info("Fila vazia.")
         _queue_card_footer()
         return
 
-    # Posição geral = posição na seção do PDF (1-based) correspondente a esta fila e grupo
+    # Índice da seção dentro de st.session_state.orders
     if filial == "RJ":
-        sec_map_main = {"super": 1, "longa": 2, "media": 3, "curta": 4, "intern": 0}
-        sec_map_extra = {"super": 6, "longa": 7, "media": 8, "curta": 9, "intern": 5}
-    else:  # SJP/PR
-        sec_map_main = {"super": 2, "longa": 0, "media": 3, "curta": 4, "intern": 5, "supercurta": 1}
-        sec_map_extra = {"super": 9, "longa": 10, "media": 11, "curta": 8, "intern": 7, "supercurta": 6}
+        sec_map = {
+            "main":  {"intern": 0, "super": 1, "longa": 2, "media": 3, "curta": 4},
+            "extra": {"intern": 5, "super": 6, "longa": 7, "media": 8, "curta": 9},
+        }
+    else:  # SJP / PR
+        sec_map = {
+            "main":  {"longa": 0, "supercurta": 1, "super": 2, "media": 3, "curta": 4, "intern": 5},
+            "extra": {"supercurta": 6, "intern": 7, "curta": 8, "super": 9, "longa": 10, "media": 11},
+        }
 
-    sec_map = sec_map_extra if group == "extra" else sec_map_main
-    sec_idx = sec_map.get(dot_class)
+    sec_idx = (sec_map.get(group, {}) or {}).get(kind)
     sec_list = []
     if sec_idx is not None and st.session_state.get("orders") and sec_idx < len(st.session_state.orders):
         sec_list = st.session_state.orders[sec_idx] or []
@@ -718,12 +783,14 @@ def show_queue(title: str, queue_list, dot_class: str, filial: str, group: str =
     for idx, f in enumerate(queue_list, start=1):
         f_str = str(f)
         destaque = "⭐" if f_str in st.session_state.frotas_destacadas else ""
-        data.append({
-            "Posição geral": pos_lookup.get(f_str, ""),
-            "Posição": idx,
-            "Frota": f_str,
-            "★": destaque,
-        })
+        data.append(
+            {
+                "Posição geral": pos_lookup.get(f_str, ""),
+                "Posição": idx,
+                "Frota": f_str,
+                "★": destaque,
+            }
+        )
 
     df = pd.DataFrame(data)
 
@@ -731,9 +798,9 @@ def show_queue(title: str, queue_list, dot_class: str, filial: str, group: str =
         styles = []
         for col in df.columns:
             if col == "Posição":
-                styles.append("font-weight:900; font-size:18px; text-align:center; background: rgba(0,0,0,.10);")
+                styles.append("font-weight:900; font-size:18px; text-align:center; background: rgba(0,0,0,.06);")
             elif col == "Posição geral":
-                styles.append("font-weight:900; text-align:center; color: rgba(0,0,0,.92); background: rgba(0,0,0,.04);")
+                styles.append("color: rgba(0,0,0,.75); font-weight:800; text-align:center;")
             elif col == "★":
                 styles.append("text-align:center;")
             else:
@@ -750,68 +817,86 @@ def show_queue(title: str, queue_list, dot_class: str, filial: str, group: str =
     _queue_card_footer()
 
 
-def rebuild_queues(filial: str, normalized: list[str]):
-    # Separa input em principais vs extras
-    normalized_main = [f for f in normalized if f in FROTAS_VALIDAS_STR]
-    normalized_extra = [f for f in normalized if f in FROTAS_500_VALIDAS_STR]
+def _split_frotas_por_grupo(frotas: list[str]) -> tuple[list[str], list[str]]:
+    """Separa frotas em:
+    - principais: 200–470
+    - extras:     501–576
+    Mantém ordem de digitação (sem deduplicar, igual ao comportamento atual).
+    """
+    principais, extras = [], []
+    for f in frotas:
+        try:
+            n = int(re.sub(r"\D", "", str(f)) or "0")
+        except Exception:
+            n = 0
+        if 200 <= n <= 470:
+            principais.append(str(n))
+        elif 501 <= n <= 576:
+            extras.append(str(n))
+    return principais, extras
+
+
+def rebuild_queues_all(filial: str, normalized: list[str]):
+    """Monta filas separadas em dois blocos:
+    - Frotas Principais (200–470)
+    - Frotas Extras (501–576)
+    Mantém a lógica original de ordem do PDF.
+    """
+    principais, extras = _split_frotas_por_grupo(normalized)
+
+    # Mapeamentos das seções no PDF -> filas do app
+    if filial == "RJ":
+        map_main = {"super": 1, "longa": 2, "media": 3, "curta": 4, "intern": 0}
+        map_extra = {"super": 6, "longa": 7, "media": 8, "curta": 9, "intern": 5}
+    else:  # SJP / PR
+        map_main = {"longa": 0, "supercurta": 1, "super": 2, "media": 3, "curta": 4, "intern": 5}
+        map_extra = {"supercurta": 6, "intern": 7, "curta": 8, "super": 9, "longa": 10, "media": 11}
 
     removidas = st.session_state.get("frotas_removidas", set())
 
-    if filial == "RJ":
-        map_main = {"super_longa": 1, "longa": 2, "media": 3, "curta": 4, "intern": 0}
-        map_extra = {"super_longa": 6, "longa": 7, "media": 8, "curta": 9, "intern": 5}
-    else:
-        map_main = {"super_longa": 2, "longa": 0, "media": 3, "curta": 4, "intern": 5, "supercurta": 1}
-        map_extra = {"super_longa": 9, "longa": 10, "media": 11, "curta": 8, "intern": 7, "supercurta": 6}
-
-    def build_queue_from_pdf(order_idx, allowed_list):
+    def build_queue(order_idx: int, selected_list: list[str]):
         if order_idx >= len(st.session_state.orders):
             return []
-        return [f for f in st.session_state.orders[order_idx] if (f in allowed_list) and (f not in removidas)]
+        return [f for f in st.session_state.orders[order_idx] if (f in selected_list) and (f not in removidas)]
 
-    st.session_state.queue_super_longa = build_queue_from_pdf(map_main["super_longa"], normalized_main)
-    st.session_state.queue_longa = build_queue_from_pdf(map_main["longa"], normalized_main)
-    st.session_state.queue_media = build_queue_from_pdf(map_main["media"], normalized_main)
-    st.session_state.queue_curta = build_queue_from_pdf(map_main["curta"], normalized_main)
+    # --- principais ---
+    st.session_state.queue_super_longa = build_queue(map_main.get("super", 0), principais)
+    st.session_state.queue_longa = build_queue(map_main.get("longa", 0), principais)
+    st.session_state.queue_media = build_queue(map_main.get("media", 0), principais)
+    st.session_state.queue_curta = build_queue(map_main.get("curta", 0), principais)
 
-    st.session_state.queue_super_longa_extra = build_queue_from_pdf(map_extra["super_longa"], normalized_extra)
-    st.session_state.queue_longa_extra = build_queue_from_pdf(map_extra["longa"], normalized_extra)
-    st.session_state.queue_media_extra = build_queue_from_pdf(map_extra["media"], normalized_extra)
-    st.session_state.queue_curta_extra = build_queue_from_pdf(map_extra["curta"], normalized_extra)
+    # extras do PDF (super curta / internacional) - montamos também, mas exibimos via toggle
+    st.session_state.queue_internacional = build_queue(map_main.get("intern", 0), principais)
+    st.session_state.queue_super_curta = build_queue(map_main.get("supercurta", 0), principais) if filial != "RJ" else []
 
-    # filas "restantes" (internacional / inter / super curta) – uma para cada grupo
-    st.session_state.queue_internacional = build_queue_from_pdf(map_main.get("intern", 999), normalized_main) if "intern" in map_main else []
-    st.session_state.queue_internacional_extra = build_queue_from_pdf(map_extra.get("intern", 999), normalized_extra) if "intern" in map_extra else []
-    st.session_state.queue_super_curta = build_queue_from_pdf(map_main.get("supercurta", 999), normalized_main) if "supercurta" in map_main else []
-    st.session_state.queue_super_curta_extra = build_queue_from_pdf(map_extra.get("supercurta", 999), normalized_extra) if "supercurta" in map_extra else []
+    # selecionadas (principais)
+    present_main = set()
+    for k in ["super", "longa", "media", "curta", "intern", "supercurta"]:
+        idx = map_main.get(k)
+        if idx is not None and idx < len(st.session_state.orders):
+            present_main.update(st.session_state.orders[idx])
+    st.session_state.selected_fleets = [f for f in principais if (f in present_main) and (f not in removidas)]
 
-    # selecionadas (para destaque)
-    st.session_state.selected_fleets = [f for f in (normalized_main + normalized_extra) if f not in removidas]
-    st.session_state.frotas_destacadas = [f for f in st.session_state.frotas_destacadas if f in st.session_state.selected_fleets]
-def rebuild_queues(filial: str, normalized: list[str]):
-    if filial == "RJ":
-        mapping = {"super_longa": 1, "longa": 2, "media": 3, "curta": 4}
-    else:
-        mapping = {"super_longa": 2, "longa": 0, "media": 3, "curta": 4}
+    # --- extras / 500 ---
+    st.session_state.queue_super_longa_500 = build_queue(map_extra.get("super", 0), extras)
+    st.session_state.queue_longa_500 = build_queue(map_extra.get("longa", 0), extras)
+    st.session_state.queue_media_500 = build_queue(map_extra.get("media", 0), extras)
+    st.session_state.queue_curta_500 = build_queue(map_extra.get("curta", 0), extras)
 
-    removidas = st.session_state.get("frotas_removidas", set())
+    st.session_state.queue_internacional_500 = build_queue(map_extra.get("intern", 0), extras)
+    st.session_state.queue_super_curta_500 = build_queue(map_extra.get("supercurta", 0), extras) if filial != "RJ" else []
 
-    present_in_sections = set()
-    for _, sec_idx in mapping.items():
-        if sec_idx < len(st.session_state.orders):
-            present_in_sections.update(st.session_state.orders[sec_idx])
+    present_extra = set()
+    for k in ["super", "longa", "media", "curta", "intern", "supercurta"]:
+        idx = map_extra.get(k)
+        if idx is not None and idx < len(st.session_state.orders):
+            present_extra.update(st.session_state.orders[idx])
+    st.session_state.selected_fleets_500 = [f for f in extras if (f in present_extra) and (f not in removidas)]
 
-    def build_queue_from_pdf(order_idx):
-        if order_idx >= len(st.session_state.orders):
-            return []
-        return [f for f in st.session_state.orders[order_idx] if (f in normalized) and (f not in removidas)]
+    # manter destaques apenas para as selecionadas (de ambos os blocos)
+    allowed = set(st.session_state.selected_fleets) | set(st.session_state.selected_fleets_500)
+    st.session_state.frotas_destacadas = [f for f in st.session_state.frotas_destacadas if f in allowed]
 
-    st.session_state.queue_super_longa = build_queue_from_pdf(mapping["super_longa"])
-    st.session_state.queue_longa = build_queue_from_pdf(mapping["longa"])
-    st.session_state.queue_media = build_queue_from_pdf(mapping["media"])
-    st.session_state.queue_curta = build_queue_from_pdf(mapping["curta"])
-    st.session_state.selected_fleets = [f for f in normalized if (f in present_in_sections) and (f not in removidas)]
-    st.session_state.frotas_destacadas = [f for f in st.session_state.frotas_destacadas if f in st.session_state.selected_fleets]
 
 def handle_remove_frota(user: str, filial: str, raw: str, is_carga: bool, fila_sel: str | None = None):
     if not st.session_state.orders or all(len(o) == 0 for o in st.session_state.orders):
@@ -834,9 +919,11 @@ def handle_remove_frota(user: str, filial: str, raw: str, is_carga: bool, fila_s
     f_norm = str(int(digits))
     removed_any = False
 
-    for name in ["selected_fleets", "queue_longa", "queue_super_longa", "queue_media", "queue_curta",
-                 "queue_longa_extra", "queue_super_longa_extra", "queue_media_extra", "queue_curta_extra",
-                 "queue_internacional", "queue_internacional_extra", "queue_super_curta", "queue_super_curta_extra"]:
+    for name in ["selected_fleets", "selected_fleets_500",
+                 "queue_longa", "queue_super_longa", "queue_media", "queue_curta",
+                 "queue_internacional", "queue_super_curta",
+                 "queue_longa_500", "queue_super_longa_500", "queue_media_500", "queue_curta_500",
+                 "queue_internacional_500", "queue_super_curta_500"]:
         lst = st.session_state.get(name, [])
         if f_norm in lst:
             lst.remove(f_norm)
@@ -997,15 +1084,16 @@ def main():
                     st.session_state.queue_longa = []
                     st.session_state.queue_media = []
                     st.session_state.queue_curta = []
-                    st.session_state.queue_super_longa_extra = []
-                    st.session_state.queue_longa_extra = []
-                    st.session_state.queue_media_extra = []
-                    st.session_state.queue_curta_extra = []
                     st.session_state.queue_internacional = []
-                    st.session_state.queue_internacional_extra = []
                     st.session_state.queue_super_curta = []
-                    st.session_state.queue_super_curta_extra = []
+                    st.session_state.queue_super_longa_500 = []
+                    st.session_state.queue_longa_500 = []
+                    st.session_state.queue_media_500 = []
+                    st.session_state.queue_curta_500 = []
+                    st.session_state.queue_internacional_500 = []
+                    st.session_state.queue_super_curta_500 = []
                     st.session_state.selected_fleets = []
+                    st.session_state.selected_fleets_500 = []
                     st.session_state.frotas_destacadas = []
                     st.session_state.registro_pegaram_carga = []
                     st.session_state.registro_excluidas = []
@@ -1035,11 +1123,11 @@ def main():
                 st.warning("Digite as frotas desejadas.")
             else:
                 normalized = normalize_fleet_list(fleets_input)
-                rebuild_queues(filial, normalized)
+                rebuild_queues_all(filial, normalized)
 
                 history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "user": user, "filial": filial, "action": "montar_filas",
-                                "detail": f"{len(st.session_state.selected_fleets)} frotas"})
+                                "detail": f"{len(st.session_state.selected_fleets)} principais + {len(st.session_state.get('selected_fleets_500', []))} extras"})
                 if st.session_state.mode_shared:
                     persist_to_shared(filial)
 
@@ -1051,7 +1139,7 @@ def main():
         if st.button("Atualizar Destaques"):
             parts = normalize_fleet_list(destacar_input)
             for f in parts:
-                if f not in st.session_state.selected_fleets:
+                if (f not in st.session_state.selected_fleets) and (f not in st.session_state.get('selected_fleets_500', [])):
                     continue
                 if f in st.session_state.frotas_destacadas:
                     st.session_state.frotas_destacadas.remove(f)
@@ -1069,58 +1157,65 @@ def main():
         st.markdown("---")
         st.subheader("Resumo rápido")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Super Longa (Principais)", len(st.session_state.queue_super_longa))
-        m2.metric("Longa (Principais)", len(st.session_state.queue_longa))
-        m3.metric("Média (Principais)", len(st.session_state.queue_media))
-        m4.metric("Curta (Principais)", len(st.session_state.queue_curta))
+        m1.metric("Super Longa", len(st.session_state.queue_super_longa))
+        m2.metric("Longa", len(st.session_state.queue_longa))
+        m3.metric("Média", len(st.session_state.queue_media))
+        m4.metric("Curta", len(st.session_state.queue_curta))
 
-        e1, e2, e3, e4 = st.columns(4)
-        e1.metric("Super Longa (Extras)", len(st.session_state.queue_super_longa_extra))
-        e2.metric("Longa (Extras)", len(st.session_state.queue_longa_extra))
-        e3.metric("Média (Extras)", len(st.session_state.queue_media_extra))
-        e4.metric("Curta (Extras)", len(st.session_state.queue_curta_extra))
-
+        
         st.subheader("Visualização das Filas")
 
-incluir_restantes = st.toggle("Incluir filas restantes (Internacional / Inter / Super Curta)", value=False)
+        st.session_state.include_rest = st.toggle(
+            "Incluir filas extras (Super Curta / Internacional)",
+            value=st.session_state.get("include_rest", False),
+            help="Mostra também as filas que não são as 4 principais, separadas por tipo de frota.",
+        )
 
-with st.expander("Frotas Principais", expanded=True):
-    col1, col2 = st.columns(2)
-    with col1:
-        show_queue("1 - SUPER LONGA", st.session_state.queue_super_longa, "super", filial, group="main")
-        show_queue("3 - MÉDIA", st.session_state.queue_media, "media", filial, group="main")
-    with col2:
-        show_queue("2 - LONGA", st.session_state.queue_longa, "longa", filial, group="main")
-        show_queue("4 - CURTA", st.session_state.queue_curta, "curta", filial, group="main")
+        st.markdown("### Frotas Principais")
+        col1, col2 = st.columns(2)
+        with col1:
+            show_queue("1 - SUPER LONGA", st.session_state.queue_super_longa, "super", filial, "main", "super")
+            show_queue("3 - MÉDIA", st.session_state.queue_media, "media", filial, "main", "media")
+        with col2:
+            show_queue("2 - LONGA", st.session_state.queue_longa, "longa", filial, "main", "longa")
+            show_queue("4 - CURTA", st.session_state.queue_curta, "curta", filial, "main", "curta")
 
-    if incluir_restantes:
-        if filial == "RJ":
-            show_queue("INTER (Principais)", st.session_state.queue_internacional, "intern", filial, group="main")
-        else:
-            col_a, col_b = st.columns(2)
-            with col_a:
-                show_queue("SUPER CURTA (Principais)", st.session_state.queue_super_curta, "supercurta", filial, group="main")
-            with col_b:
-                show_queue("INTERNACIONAL (Principais)", st.session_state.queue_internacional, "intern", filial, group="main")
+        if st.session_state.include_rest:
+            st.markdown("#### Filas extras – Principais")
+            if filial == "RJ":
+                show_queue("INTERNACIONAL", st.session_state.get("queue_internacional", []), "intern", filial, "main", "intern")
+            else:
+                cA, cB = st.columns(2)
+                with cA:
+                    show_queue("SUPER CURTA", st.session_state.get("queue_super_curta", []), "supercurta", filial, "main", "supercurta")
+                with cB:
+                    show_queue("INTERNACIONAL", st.session_state.get("queue_internacional", []), "intern", filial, "main", "intern")
 
-with st.expander("Frotas Extras", expanded=True):
-    col1e, col2e = st.columns(2)
-    with col1e:
-        show_queue("1 - SUPER LONGA", st.session_state.queue_super_longa_extra, "super", filial, group="extra")
-        show_queue("3 - MÉDIA", st.session_state.queue_media_extra, "media", filial, group="extra")
-    with col2e:
-        show_queue("2 - LONGA", st.session_state.queue_longa_extra, "longa", filial, group="extra")
-        show_queue("4 - CURTA", st.session_state.queue_curta_extra, "curta", filial, group="extra")
+        st.markdown("---")
+        st.markdown("### Frotas Extras")
 
-    if incluir_restantes:
-        if filial == "RJ":
-            show_queue("500 - INTER", st.session_state.queue_internacional_extra, "intern", filial, group="extra")
-        else:
-            col_a2, col_b2 = st.columns(2)
-            with col_a2:
-                show_queue("SUPER CURTA 500", st.session_state.queue_super_curta_extra, "supercurta", filial, group="extra")
-            with col_b2:
-                show_queue("500 - INTERN-SJP", st.session_state.queue_internacional_extra, "intern", filial, group="extra")
+        col3, col4 = st.columns(2)
+        with col3:
+            show_queue("1 - SUPER LONGA (500)", st.session_state.get("queue_super_longa_500", []), "super", filial, "extra", "super")
+            show_queue("3 - MÉDIA (500)", st.session_state.get("queue_media_500", []), "media", filial, "extra", "media")
+        with col4:
+            show_queue("2 - LONGA (500)", st.session_state.get("queue_longa_500", []), "longa", filial, "extra", "longa")
+            show_queue("4 - CURTA (500)", st.session_state.get("queue_curta_500", []), "curta", filial, "extra", "curta")
+
+        if st.session_state.include_rest:
+            st.markdown("#### Filas extras – 500")
+            if filial == "RJ":
+                show_queue("INTERNACIONAL (500)", st.session_state.get("queue_internacional_500", []), "intern", filial, "extra", "intern")
+            else:
+                cC, cD = st.columns(2)
+                with cC:
+                    show_queue("SUPER CURTA (500)", st.session_state.get("queue_super_curta_500", []), "supercurta", filial, "extra", "supercurta")
+                with cD:
+                    show_queue("INTERNACIONAL (500)", st.session_state.get("queue_internacional_500", []), "intern", filial, "extra", "intern")
+
+        if st.session_state.get("mode_shared") and st.session_state.get("orders"):
+            persist_to_shared(filial)
+
 
 
     with tab_ops:
