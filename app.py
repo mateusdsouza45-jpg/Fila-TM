@@ -449,39 +449,6 @@ def load_from_shared(filial: str):
     st.session_state.include_rest = state.get("include_rest", False)
 
 
-
-# --------------------------- AJUSTE DE LEITURA (PÁGINAS DAS FROTAS 500) ---------------------------
-# No PDF do RJ, as frotas 500 começam a partir da página 21 (1-based).
-# No PDF do PR/SJP, as frotas 500 começam a partir da página 25 (1-based).
-RJ_500_START_PAGE_1BASED = 21
-PR_500_START_PAGE_1BASED = 25
-
-def _pdf_page_count(path: str) -> int:
-    """Conta páginas do PDF (para podermos cortar a leitura por faixa)."""
-    try:
-        from pdfminer.pdfpage import PDFPage
-        with open(path, "rb") as f:
-            return sum(1 for _ in PDFPage.get_pages(f))
-    except Exception:
-        return 0
-
-def _extract_text_pages(path: str, start_0: int, end_0_exclusive: int | None = None) -> str:
-    """Extrai texto do PDF somente de um intervalo de páginas (0-based)."""
-    page_count = _pdf_page_count(path) or 0
-    if page_count <= 0:
-        return extract_text(path)
-    start_0 = max(0, int(start_0))
-    end_0_exclusive = page_count if end_0_exclusive is None else max(0, int(end_0_exclusive))
-    end_0_exclusive = min(end_0_exclusive, page_count)
-    if start_0 >= end_0_exclusive:
-        return ""
-    pages = list(range(start_0, end_0_exclusive))
-    try:
-        return extract_text(path, page_numbers=pages)
-    except TypeError:
-        # pdfminer antigo pode não suportar page_numbers; cai no modo padrão
-        return extract_text(path)
-
 # =============================================================================
 #                           SEU APP (parsing e filas)
 # =============================================================================
@@ -498,7 +465,10 @@ FROTAS_VALIDAS = {
     463,464,466,467,468,469,470,
     501,502,503,504,505,506,507,508,509,510,511,512,513,514,515,516,517,518,519,520,521,522,523,524,525,526,527,528,529,530,531,532,533,534,535,536,537,538,539,540,541,542,543,544,545,546,547,548,549,550,551,552,553,554,555,556,557,558,559,560,561,562,563,564,565,566,567,568,569,570,571,572,573,574,575,576
 }
-FROTAS_VALIDAS_STR = {str(x) for x in FROTAS_VALIDAS}
+FROTAS_VALIDAS_500 = set(range(501, 577))
+FROTAS_PRINCIPAIS_STR = {str(x) for x in FROTAS_VALIDAS}
+FROTAS_EXTRAS_STR = {str(x) for x in FROTAS_VALIDAS_500}
+FROTAS_TODAS_STR = FROTAS_PRINCIPAIS_STR | FROTAS_EXTRAS_STR
 
 SECTION_TITLES_RJ = [
     "INTER - RESENDE",
@@ -515,21 +485,20 @@ SECTION_TITLES_RJ = [
 
 
 SEC_PATTERNS_RJ = [
-    (re.compile(r"INTER\s*-\s*RESENDE", re.IGNORECASE), 0),
-    (re.compile(r"SUPER\s*LONGA\s*-\s*RESENDE", re.IGNORECASE), 1),
-    (re.compile(r"LONGA\s*-\s*RESENDE", re.IGNORECASE), 2),
-    (re.compile(r"MEDIA\s*RESENDE", re.IGNORECASE), 3),
-    (re.compile(r"CURTA\s*-\s*RESENDE", re.IGNORECASE), 4),
+    # PRINCIPAIS (200–470)
+    (re.compile(r"^\s*INTER\s*-\s*RESENDE\b", re.IGNORECASE), 0),
+    (re.compile(r"^\s*SUPER\s*LONGA\s*-\s*RESENDE\b", re.IGNORECASE), 1),
+    (re.compile(r"^\s*LONGA\s*-\s*RESENDE\b", re.IGNORECASE), 2),
+    (re.compile(r"^\s*MEDIA\s*RESENDE\b", re.IGNORECASE), 3),
+    (re.compile(r"^\s*CURTA\s*-\s*RESENDE\b", re.IGNORECASE), 4),
 
-    (re.compile(r"500\s*-\s*INTER\s*-\s*RESENDE", re.IGNORECASE), 5),
-    (re.compile(r"500\s*-\s*SUPER\s*LONGA\s*-?\s*RESENDE", re.IGNORECASE), 6),
-    (re.compile(r"500\s*-\s*LONGA\s*-?\s*RESENDE", re.IGNORECASE), 7),
-    (re.compile(r"500\s*-\s*MEDIA\s*-?\s*RESENDE", re.IGNORECASE), 8),
-    (re.compile(r"500\s*-\s*CURTA\s*-?\s*RESENDE", re.IGNORECASE), 9),
+    # EXTRAS (500)
+    (re.compile(r"^\s*500\s*-\s*INTER\s*-\s*RESENDE\b", re.IGNORECASE), 5),
+    (re.compile(r"^\s*500\s*-\s*SUPER\s*LONGA\s*-?\s*RESENDE\b", re.IGNORECASE), 6),
+    (re.compile(r"^\s*500\s*-\s*LONGA\s*-?\s*RESENDE\b", re.IGNORECASE), 7),
+    (re.compile(r"^\s*500\s*-\s*MEDIA\s*-?\s*RESENDE\b", re.IGNORECASE), 8),
+    (re.compile(r"^\s*500\s*-\s*CURTA\s*-?\s*RESENDE\b", re.IGNORECASE), 9),
 ]
-
-
-
 PATTERN_SEQ_INTERNO_FROTA_RJ = re.compile(
     r'(?:\bSIM\b\s+)?\b\d+\b\s+\b\d+\.\d+\b\s+(\d{2,3})\b',
     re.IGNORECASE
@@ -537,8 +506,8 @@ PATTERN_SEQ_INTERNO_FROTA_RJ = re.compile(
 PATTERN_ISOLATED_NUM_RJ = re.compile(r'(?<!\.)\b\d{2,6}\b(?!\.)')
 
 def extract_orders_rj_from_text(text: str):
-    # Número de seções no PDF do RJ (inclui blocos "500 - ...")
-    n_sections = len(SECTION_TITLES_RJ) if "SECTION_TITLES_RJ" in globals() else 5
+    # RJ: 5 seções PRINCIPAIS + 5 seções EXTRAS (500)
+    n_sections = 10
 
     if not text:
         return [[] for _ in range(n_sections)]
@@ -546,19 +515,26 @@ def extract_orders_rj_from_text(text: str):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     sections = [[] for _ in range(n_sections)]
     current_sec_index = None
+
     for line in lines:
         for pattern, idx in SEC_PATTERNS_RJ:
             if pattern.search(line):
                 current_sec_index = idx
                 break
+
         if current_sec_index is None or current_sec_index >= n_sections:
             continue
+
+        allowed = FROTAS_PRINCIPAIS_STR if current_sec_index < 5 else FROTAS_EXTRAS_STR
 
         m = PATTERN_SEQ_INTERNO_FROTA_RJ.search(line)
         if m:
             frota_cand = m.group(1)
-            n_norm = str(int(frota_cand))
-            if n_norm in FROTAS_VALIDAS_STR and n_norm not in sections[current_sec_index]:
+            try:
+                n_norm = str(int(frota_cand))
+            except Exception:
+                n_norm = None
+            if n_norm and n_norm in allowed and n_norm not in sections[current_sec_index]:
                 sections[current_sec_index].append(n_norm)
             continue
 
@@ -570,11 +546,12 @@ def extract_orders_rj_from_text(text: str):
                     n_norm = str(int(n))
                 except Exception:
                     continue
-                if n_norm in FROTAS_VALIDAS_STR:
+                if n_norm in allowed:
                     chosen = n_norm
                     break
             if chosen and chosen not in sections[current_sec_index]:
                 sections[current_sec_index].append(chosen)
+
     return sections
 
 def extract_rj_from_uploaded_pdf(uploaded_pdf):
@@ -582,25 +559,56 @@ def extract_rj_from_uploaded_pdf(uploaded_pdf):
         tmp.write(uploaded_pdf.read())
         tmp_path = tmp.name
     try:
-        # Separa texto principal e texto das frotas 500 por página.
-        # Página informada pelo usuário é 1-based → converte para 0-based.
-        start_0 = max(0, RJ_500_START_PAGE_1BASED - 1)
-        page_count = _pdf_page_count(tmp_path) or 0
-
-        if page_count > 0 and start_0 < page_count:
-            text_main = _extract_text_pages(tmp_path, 0, start_0)
-            text_extra = _extract_text_pages(tmp_path, start_0, None)
-            text = (text_main or "") + "\n\n" + (text_extra or "")
-        else:
-            # fallback (caso não consiga contar páginas)
-            text = extract_text(tmp_path)
+        text = extract_text(tmp_path)
     finally:
         try:
             os.remove(tmp_path)
         except Exception:
             pass
-
     return extract_orders_rj_from_text(text)
+
+SECTION_LABELS_SJP = [
+    "LONGA MT-GO-DF-TO",
+    "SUPER CURTA",
+    "SUPER-LONGA MA-PA-AC-RO",
+    "MEDIA SP - RJ - MS",
+    "CURTA - PR - PORTO",
+    "INTERNACIONAL",
+    "SUPER CURTA 500",
+    "500 - INTERN-SJP",
+    "500 - CURTA-SJP",
+    "500 - SUPER LONGA-SJP",
+    "500 - LONGA-SJP",
+    "500 - MEDIA-SJP",
+]
+
+
+SECTION_TITLES_SJP_REGEX = [
+    # PRINCIPAIS (200–470)
+    r"^\s*LONGA\s+MT-?GO-?DF-?TO\b",
+    r"^\s*SUPER\s+CURTA\b(?!\s*500\b)",
+    r"^\s*SUPER[-\s]*LONGA\s+MA-?PA-?AC-?RO\b",
+    r"^\s*MEDIA\s+SP\s*-\s*RJ\s*-\s*MS\b",
+    r"^\s*CURTA\s*-\s*PR\s*-\s*PORTO\b",
+    r"^\s*INTERNACIONAL\b",
+
+    # EXTRAS (500)
+    r"^\s*SUPER\s+CURTA\s+500\b",
+    r"^\s*500\s*-\s*INTERN-?SJP\b",
+    r"^\s*500\s*-\s*CURTA-?SJP\b",
+    r"^\s*500\s*-\s*SUPER\s+LONGA-?SJP\b",
+    r"^\s*500\s*-\s*LONGA-?SJP\b",
+    r"^\s*500\s*-\s*MEDIA-?SJP\b",
+]
+
+SECTION_PATTERNS_SJP = [re.compile(p, re.IGNORECASE | re.MULTILINE) for p in SECTION_TITLES_SJP_REGEX]
+
+
+PATTERN_SEQ_INTERNO_FROTA_SJP = re.compile(
+    r'(?:\bSIM\b\s+)?\b\d+\b\s+\b\d+\.\d+\b\s+(\d{2,6})\b',
+    re.IGNORECASE
+)
+PATTERN_ISOLATED_NUM_SJP = re.compile(r'(?<!\.)\b\d{2,6}\b(?!\.)')
 
 def split_text_into_sections_sjp(text: str):
     positions = []
@@ -621,13 +629,14 @@ def split_text_into_sections_sjp(text: str):
         blocks[idx] = blk
     return blocks
 
-def extract_fleets_from_block_sjp(block_text: str):
+def extract_fleets_from_block_sjp(block_text: str, allowed_set: set[str]):
     ordered = []
     seen = set()
     for line in block_text.splitlines():
         line = line.strip()
         if not line:
             continue
+
         m = PATTERN_SEQ_INTERNO_FROTA_SJP.search(line)
         if m:
             frota_cand = m.group(1)
@@ -635,7 +644,7 @@ def extract_fleets_from_block_sjp(block_text: str):
                 n_norm = str(int(frota_cand))
             except Exception:
                 n_norm = None
-            if n_norm and n_norm in FROTAS_VALIDAS_STR and n_norm not in seen:
+            if n_norm and n_norm in allowed_set and n_norm not in seen:
                 seen.add(n_norm)
                 ordered.append(n_norm)
             continue
@@ -648,51 +657,69 @@ def extract_fleets_from_block_sjp(block_text: str):
                     n_norm = str(int(n))
                 except Exception:
                     continue
-                if n_norm in FROTAS_VALIDAS_STR:
+                if n_norm in allowed_set:
                     chosen = n_norm
                     break
             if chosen and chosen not in seen:
                 seen.add(chosen)
                 ordered.append(chosen)
+
     return ordered
 
 def extract_orders_sjp_from_text(text: str):
+    # SJP/PR: 6 seções PRINCIPAIS + 6 seções EXTRAS (500)
+    n_sections = 12
+
     if not text or len(text.strip()) < 5:
-        return [[] for _ in SECTION_LABELS_SJP]
+        return [[] for _ in range(n_sections)]
+
     blocks = split_text_into_sections_sjp(text)
     if not blocks:
-        fallback = []
-        seen = set()
+        # fallback: pega tudo, mas separa por tipo de frota
+        principals = []
+        extras = []
+        seen_p = set()
+        seen_e = set()
         for line in text.splitlines():
             nums = PATTERN_ISOLATED_NUM_SJP.findall(line)
             for n in nums:
-                n_norm = str(int(n))
-                if n_norm in FROTAS_VALIDAS_STR and n_norm not in seen:
-                    seen.add(n_norm)
-                    fallback.append(n_norm)
-        return [fallback for _ in range(len(SECTION_LABELS_SJP))]
-    return [extract_fleets_from_block_sjp(blk) if blk else [] for blk in blocks]
+                try:
+                    n_norm = str(int(n))
+                except Exception:
+                    continue
+                if n_norm in FROTAS_PRINCIPAIS_STR and n_norm not in seen_p:
+                    seen_p.add(n_norm)
+                    principals.append(n_norm)
+                if n_norm in FROTAS_EXTRAS_STR and n_norm not in seen_e:
+                    seen_e.add(n_norm)
+                    extras.append(n_norm)
+        # devolve listas “genéricas” para não quebrar a UI
+        return [principals for _ in range(6)] + [extras for _ in range(6)]
+
+    out = []
+    for idx, blk in enumerate(blocks):
+        if not blk:
+            out.append([])
+            continue
+        allowed = FROTAS_PRINCIPAIS_STR if idx < 6 else FROTAS_EXTRAS_STR
+        out.append(extract_fleets_from_block_sjp(blk, allowed))
+
+    # garante tamanho
+    if len(out) < n_sections:
+        out += [[] for _ in range(n_sections - len(out))]
+    return out[:n_sections]
 
 def extract_sjp_from_uploaded_pdf(uploaded_pdf):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_pdf.read())
         tmp_path = tmp.name
     try:
-        start_0 = max(0, PR_500_START_PAGE_1BASED - 1)
-        page_count = _pdf_page_count(tmp_path) or 0
-
-        if page_count > 0 and start_0 < page_count:
-            text_main = _extract_text_pages(tmp_path, 0, start_0)
-            text_extra = _extract_text_pages(tmp_path, start_0, None)
-            text = (text_main or "") + "\n\n" + (text_extra or "")
-        else:
-            text = extract_text(tmp_path)
+        text = extract_text(tmp_path)
     finally:
         try:
             os.remove(tmp_path)
         except Exception:
             pass
-
     return extract_orders_sjp_from_text(text)
 
 def normalize_fleet_list(raw: str):
