@@ -10,7 +10,6 @@ from io import BytesIO
 import streamlit as st
 import pandas as pd
 from pdfminer.high_level import extract_text
-import pdfplumber
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -489,271 +488,121 @@ def _extract_meta_from_section_block(block_lines: list[str], frotas_in_order: li
 
 
 def extract_meta_from_text(text: str, orders=None) -> dict:
-    """Extrai meta (motorista/última viagem/UF/município) por frota.
+    """Extrai meta por frota usando o texto do pdfminer (compatível com Streamlit Community Cloud).
 
-    IMPORTANTES:
-    - Sempre ignora 100% qualquer número no formato 999.999 / 9.999.999 etc (interno/controle).
-    - Usa a data MAIS RECENTE encontrada para cada frota (quando existir).
-    - Se não houver data em uma linha, ainda tenta extrair motorista usando UF (quando houver) como delimitador.
+    Regras:
+    - Ignora 100% qualquer número no formato 999.999 / 9.999.999 etc. (interno/controle).
+    - Captura:
+        frota (2-6 dígitos), data (opcional dd/mm/aaaa), motorista, UF (opcional), município (opcional).
+    - Para cada frota, mantém a DATA MAIS RECENTE encontrada (quando existir).
+      Se uma ocorrência não tiver data, ela só preenche motorista se ainda estiver NA.
+
+    Observação: o pdfminer às vezes quebra uma linha em 2-3 linhas; por isso tentamos casar
+    juntando até 3 linhas consecutivas.
     """
     meta: dict[str, dict] = {}
     if not text or len(text.strip()) < 5:
         return meta
 
+    META_WITH_UF = re.compile(
+        r"^(?P<frota>\d{2,6})\s+"
+        r"(?:(?P<data>\d{2}/\d{2}/\d{4})\s+)?"
+        r"(?P<motorista>.+?)\s+"
+        r"(?P<uf>[A-Z]{2})\s+"
+        r"(?P<municipio>.+?)\s+"
+        r"(?:SIM\s+)?"
+        r"(?P<seq>\d{1,3})"
+        r"(?:\s+(?P<obs>DISPONIVEL|EM\s+VIAGEM))?\s*$",
+        re.UNICODE,
+    )
 
-def extract_meta_from_pdfplumber(pdf_path: str) -> dict:
-    """Extrai meta por frota usando pdfplumber.extract_words (robusto contra 'datas quebradas').
+    META_NO_UF = re.compile(
+        r"^(?P<frota>\d{2,6})\s+"
+        r"(?:(?P<data>\d{2}/\d{2}/\d{4})\s+)?"
+        r"(?P<motorista>.+?)\s+"
+        r"(?:SIM\s+)?"
+        r"(?P<seq>\d{1,3})"
+        r"(?:\s+(?P<obs>DISPONIVEL|EM\s+VIAGEM))?\s*$",
+        re.UNICODE,
+    )
 
-    - Ignora 100% qualquer token no formato 999.999 (interno/controle)
-    - Para cada frota, mantém a DATA MAIS RECENTE encontrada (quando houver)
-    """
-    meta: dict[str, dict] = {}
-
-    UFS = {"AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"}
-
-    re_interno = re.compile(r"^\d{1,3}(?:\.\d{3})+$")
-    re_date = re.compile(r"^\d{2}/\d{2}/\d{4}$")
-
-    def parse_date(s: str):
+    def _parse_date(d: str):
         try:
-            return datetime.strptime(s, "%d/%m/%Y")
+            return datetime.strptime(d, "%d/%m/%Y")
         except Exception:
             return None
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            words = page.extract_words(x_tolerance=1, y_tolerance=2, keep_blank_chars=False, use_text_flow=True) or []
-            if not words:
-                continue
+    lines = [l for l in (text or "").splitlines() if (l or "").strip()]
+    i = 0
+    while i < len(lines):
+        consumed = 1
+        hit = None
+        gd = None
 
-            # agrupa por linha (aproximação pelo topo)
-            buckets: dict[int, list[dict]] = {}
-            for w in words:
-                top_key = int(round((w.get("top", 0) or 0) / 5.0)) * 5
-                buckets.setdefault(top_key, []).append(w)
+        buf = (lines[i] or "").strip()
+        for j in range(0, 3):
+            if i + j >= len(lines):
+                break
+            if j > 0:
+                buf = (buf + " " + (lines[i + j] or "").strip()).strip()
 
-            for _, ws in sorted(buckets.items(), key=lambda kv: kv[0]):
-                ws = sorted(ws, key=lambda w: w.get("x0", 0))
-                texts = [w.get("text","").strip() for w in ws if (w.get("text") or "").strip()]
-                if not texts:
-                    continue
+            line = buf.upper()
 
-                low_join = " ".join(texts).lower()
-                if low_join.startswith("serviço") or "interno frota motorista" in low_join or "fila de carreteiros" in low_join:
-                    continue
+            # separa data grudada no texto: "ROCHA23/04/2025" -> "ROCHA 23/04/2025"
+            line = re.sub(r"([A-ZÀ-Ü])(?=(\d{2}/\d{2}/\d{4}))", r"\1 ", line)
 
-                # encontra frota
-                frota = None
-                frota_idx = None
-                for i,t in enumerate(texts):
-                    if re_interno.match(t):
-                        continue
-                    if t.isdigit():
-                        try:
-                            n = str(int(t))
-                        except Exception:
-                            continue
-                        if n in FROTAS_TODAS_STR:
-                            frota = n
-                            frota_idx = i
-                            break
-                if not frota:
-                    continue
+            # ignora interno/controle 100%
+            line = INTERNAL_RE.sub(" ", line)
 
-                # data / UF
-                date_str = None
-                date_idx = None
-                for i,t in enumerate(texts):
-                    if re_date.match(t):
-                        date_str = t
-                        date_idx = i
-                        break
+            # normaliza espaços
+            line = re.sub(r"\s+", " ", line).strip()
 
-                uf = "NA"
-                uf_idx = None
-                for i,t in enumerate(texts):
-                    if len(t)==2 and t.upper() in UFS:
-                        uf = t.upper()
-                        uf_idx = i
-                        break
+            m = META_WITH_UF.match(line) or META_NO_UF.match(line)
+            if m:
+                consumed = j + 1
+                gd = m.groupdict()
+                hit = line
+                break
 
-                # motorista
-                start = frota_idx + 1
-                end = None
-                if date_idx is not None:
-                    end = date_idx
-                elif uf_idx is not None:
-                    end = uf_idx
-                else:
-                    end = len(texts)
+        if not gd:
+            i += 1
+            continue
 
-                motorista_tokens = []
-                for t in texts[start:end]:
-                    if t.upper() == "SIM":
-                        continue
-                    if re_interno.match(t):
-                        continue
-                    if t.isdigit():  # seq/serviço etc
-                        continue
-                    motorista_tokens.append(t)
-
-                motorista = " ".join(motorista_tokens).strip() or "NA"
-
-                municipio = "NA"
-                # município costuma vir depois da UF (e às vezes depois da data também)
-                if uf_idx is not None:
-                    municipio_tokens = []
-                    for t in texts[uf_idx+1:]:
-                        if re_interno.match(t) or t.isdigit() or re_date.match(t) or t.upper()=="SIM":
-                            continue
-                        municipio_tokens.append(t)
-                    if municipio_tokens:
-                        municipio = " ".join(municipio_tokens).strip() or "NA"
-
-                dt = parse_date(date_str) if date_str else None
-                cur = meta.get(frota)
-                if not cur:
-                    meta[frota] = {"motorista": motorista, "ult_viag": date_str or "NA", "uf": uf, "municipio": municipio}
-                else:
-                    # completa motorista mesmo sem data
-                    if cur.get("motorista","NA") == "NA" and motorista != "NA":
-                        cur["motorista"] = motorista
-                    if cur.get("uf","NA") == "NA" and uf != "NA":
-                        cur["uf"] = uf
-                    if cur.get("municipio","NA") == "NA" and municipio != "NA":
-                        cur["municipio"] = municipio
-
-                    if dt:
-                        cur_dt = parse_date(cur.get("ult_viag","") or "")
-                        if (cur_dt is None) or (dt > cur_dt):
-                            cur["ult_viag"] = date_str
-                            if motorista != "NA":
-                                cur["motorista"] = motorista
-                            if uf != "NA":
-                                cur["uf"] = uf
-                            if municipio != "NA":
-                                cur["municipio"] = municipio
-                    meta[frota] = cur
-
-    return meta
-
-    # UFs do Brasil
-    UFS = {"AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"}
-
-    re_interno = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")          # 174.382 / 298.691 etc (IGNORAR)
-    re_date = re.compile(r"\d{2}/\d{2}/\d{4}")
-    re_num = re.compile(r"\b\d{2,6}\b")
-
-    def parse_date(s: str):
+        frota = (gd.get("frota") or "").strip()
         try:
-            return datetime.strptime(s, "%d/%m/%Y")
+            frota = str(int(re.sub(r"\D", "", frota)))
         except Exception:
-            return None
-
-    lines = [(l or "").strip() for l in text.splitlines() if (l or "").strip()]
-    for raw in lines:
-        low = raw.lower()
-        if low.startswith("page ") or "fila de carreteiros" in low:
-            continue
-        if low.startswith("serviço") or "serviço situação" in low:
-            continue
-        if "interno frota motorista" in low:
+            i += consumed
             continue
 
-        # remove interno/controle (IGNORADO)
-        line = re_interno.sub(" ", raw)
-        line = re.sub(r"\s+", " ", line).strip()
-        if not line:
-            continue
+        motorista = re.sub(r"\s+", " ", (gd.get("motorista") or "").strip()) or "NA"
+        data = (gd.get("data") or "").strip() or "NA"
+        uf = (gd.get("uf") or "").strip() or "NA"
+        municipio = re.sub(r"\s+", " ", (gd.get("municipio") or "").strip()) or "NA"
 
-        # acha a frota (primeiro número válido no conjunto do app)
-        frota = None
-        for n in re_num.findall(line):
-            try:
-                n_norm = str(int(n))
-            except Exception:
-                continue
-            if n_norm in FROTAS_TODAS_STR:
-                frota = n_norm
-                break
-        if not frota:
-            continue
-
-        m_f = re.search(rf"\b{re.escape(frota)}\b", line)
-        if not m_f:
-            continue
-        rest = line[m_f.end():].strip()
-        if not rest:
-            continue
-
-        m_d = re_date.search(rest)
-        date_str = m_d.group(0) if m_d else None
-        dt = parse_date(date_str) if date_str else None
-
-        # UF
-        uf = "NA"
-        municipio = "NA"
-        tokens = rest.split()
-        uf_pos = None
-        for i, t in enumerate(tokens):
-            if len(t) == 2 and t.upper() in UFS:
-                uf = t.upper()
-                uf_pos = i
-                break
-
-        if m_d:
-            motorista = rest[:m_d.start()].strip()
-            tail = rest[m_d.end():].strip()
-            tail_tokens = tail.split()
-            for i, t in enumerate(tail_tokens):
-                if len(t) == 2 and t.upper() in UFS:
-                    uf = t.upper()
-                    municipio = " ".join(tail_tokens[i+1:]).strip() or "NA"
-                    break
+        if frota not in meta:
+            meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
         else:
-            if uf_pos is not None:
-                motorista = " ".join(tokens[:uf_pos]).strip()
-                municipio = " ".join(tokens[uf_pos+1:]).strip() or "NA"
+            old = meta[frota] or {}
+            old_date = (old.get("ult_viag") or "NA").strip()
+
+            new_dt = _parse_date(data) if data != "NA" else None
+            old_dt = _parse_date(old_date) if old_date != "NA" else None
+
+            if new_dt and (old_dt is None or new_dt > old_dt):
+                meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
             else:
-                motorista = rest.strip()
+                if (old.get("motorista") in (None, "", "NA")) and motorista not in ("", "NA"):
+                    old["motorista"] = motorista
+                if (old.get("uf") in (None, "", "NA")) and uf not in ("", "NA"):
+                    old["uf"] = uf
+                if (old.get("municipio") in (None, "", "NA")) and municipio not in ("", "NA"):
+                    old["municipio"] = municipio
+                meta[frota] = old
 
-        motorista = re.sub(r"\bSIM\b", " ", motorista, flags=re.IGNORECASE).strip()
-        motorista = re.sub(r"\b\d+\b", " ", motorista).strip()
-        motorista = re.sub(r"\s+", " ", motorista).strip()
-        if not motorista:
-            motorista = "NA"
-
-        cur = meta.get(frota)
-        if not cur:
-            meta[frota] = {"motorista": motorista, "ult_viag": date_str or "NA", "uf": uf, "municipio": municipio}
-            continue
-
-        # completa campos
-        if cur.get("motorista","NA") == "NA" and motorista != "NA":
-            cur["motorista"] = motorista
-        if cur.get("uf","NA") == "NA" and uf != "NA":
-            cur["uf"] = uf
-        if cur.get("municipio","NA") == "NA" and municipio != "NA":
-            cur["municipio"] = municipio
-
-        # data mais recente
-        if dt:
-            cur_dt = parse_date(cur.get("ult_viag","") or "")
-            if (cur_dt is None) or (dt > cur_dt):
-                cur["ult_viag"] = date_str
-                if motorista != "NA":
-                    cur["motorista"] = motorista
-                if uf != "NA":
-                    cur["uf"] = uf
-                if municipio != "NA":
-                    cur["municipio"] = municipio
-
-        meta[frota] = cur
+        i += consumed
 
     return meta
-
-# --------------------------- HISTÓRICO ---------------------------
-
 def history_append(event: dict):
     """Salva histórico por usuário (privado)."""
     username = (event.get("user") or "anon")
@@ -983,15 +832,8 @@ def extract_rj_from_uploaded_pdf(uploaded_pdf):
         # ORDENS: mantém o parser atual (pdfminer)
         text_orders = extract_text(tmp_path)
         orders = extract_orders_rj_from_text(text_orders)
-
-        # META: texto linha-a-linha via pdfplumber (mais confiável)
-        with pdfplumber.open(tmp_path) as pdf:
-            pages_txt = []
-            for page in pdf.pages:
-                pages_txt.append(page.extract_text(x_tolerance=2, y_tolerance=2) or "")
-            text_meta = "\n".join(pages_txt)
-
-        meta = extract_meta_from_pdfplumber(tmp_path)
+        # META: extração compatível com Streamlit Cloud (pdfminer + regex robusto)
+        meta = extract_meta_from_text(text_orders)
         return orders, meta
     finally:
         try:
@@ -1160,15 +1002,8 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
         # ORDENS: mantém o parser atual (pdfminer)
         text_orders = extract_text(tmp_path)
         orders = extract_orders_sjp_from_text(text_orders)
-
-        # META: texto linha-a-linha via pdfplumber (mais confiável)
-        with pdfplumber.open(tmp_path) as pdf:
-            pages_txt = []
-            for page in pdf.pages:
-                pages_txt.append(page.extract_text(x_tolerance=2, y_tolerance=2) or "")
-            text_meta = "\n".join(pages_txt)
-
-        meta = extract_meta_from_pdfplumber(tmp_path)
+        # META: extração compatível com Streamlit Cloud (pdfminer + regex robusto)
+        meta = extract_meta_from_text(text_orders)
         return orders, meta
     finally:
         try:
