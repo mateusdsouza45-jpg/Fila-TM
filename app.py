@@ -358,12 +358,10 @@ META_LINE_RE_NO_DATE = re.compile(
     re.UNICODE | re.IGNORECASE,
 )
 
-def extract_meta_from_text(text: str) -> dict:
-    """Extrai motorista e data da última viagem por frota.
 
-    Importante: o "interno" no formato 999.999 / 9.999.999 (ex: 308.607) NÃO deve ser usado
-    como fonte de dados e deve ser ignorado 100%. Por isso removemos esse padrão da linha
-    antes de aplicar as regex.
+def extract_meta_from_text(text: str) -> dict:
+    """Extrai Motorista e Últ. Viag. por frota (quando possível).
+    Observação importante: o campo "Interno" (formato 999.999) NÃO pode ser tratado como frota em nenhum momento.
 
     Retorno:
       meta[frota] = {"motorista": <str>, "ult_viag": <dd/mm/aaaa|NA>, "uf": <UF|NA>, "municipio": <str|NA>}
@@ -372,71 +370,63 @@ def extract_meta_from_text(text: str) -> dict:
     if not text or len(text.strip()) < 5:
         return meta
 
-    # Ignorar "interno": 999.999 / 9.999.999 etc.
-    RE_INTERNO = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")
-
-    # 1) Completo (sem considerar interno): FROTA DATA MOTORISTA UF MUNICIPIO
-    re_full = re.compile(
-        r"\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\b",
-        re.UNICODE | re.IGNORECASE,
-    )
-    # 2) Médio: FROTA DATA MOTORISTA UF
-    re_mid = re.compile(
-        r"\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\b",
-        re.UNICODE | re.IGNORECASE,
-    )
-    # 3) Sem data: FROTA MOTORISTA UF MUNICIPIO
-    re_nodate = re.compile(
-        r"\b(?P<frota>\d{2,6})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\b",
-        re.UNICODE | re.IGNORECASE,
-    )
+    # Estratégia robusta (PDFMiner às vezes "cola" a data no final do nome, ex: "ROCHA23/04/2025")
+    # 1) acha linhas com "Interno" 999.999 seguido de Frota
+    # 2) no restante, procura a data dd/mm/aaaa (com ou sem espaço antes)
+    # 3) após a data, tenta UF e Município
+    interno_frota_re = re.compile(r"\b(?P<interno>\d{3}\.\d{3})\s+(?P<frota>\d{2,6})\s+(?P<rest>.+)", re.UNICODE)
+    data_re = re.compile(r"(?P<data>\d{2}/\d{2}/\d{4})")
 
     for raw_line in text.splitlines():
         line = (raw_line or "").strip()
         if not line:
             continue
 
-        # remove "interno" antes de tentar casar (ignorar 100%)
-        line = RE_INTERNO.sub(" ", line)
-        line = re.sub(r"\s+", " ", line).strip()
-        if not line:
-            continue
-
-        m = re_full.search(line) or re_mid.search(line) or re_nodate.search(line)
+        m = interno_frota_re.search(line)
         if not m:
             continue
 
         frota = m.group("frota")
+        rest = (m.group("rest") or "").strip()
+
+        # normaliza frota
         try:
             frota = str(int(re.sub(r"\D", "", frota)))
         except Exception:
             continue
 
-        data = (m.groupdict().get("data") or "NA").strip() if "data" in m.groupdict() else "NA"
-        motorista = (m.groupdict().get("motorista") or "NA").strip()
-        uf = (m.groupdict().get("uf") or "NA").strip().upper()
-        municipio = (m.groupdict().get("municipio") or "NA").strip()
+        # separa motorista / data / uf / municipio
+        motorista = "NA"
+        ult = "NA"
+        uf = "NA"
+        municipio = "NA"
 
-        motorista = re.sub(r"\s+", " ", motorista).strip() or "NA"
-        municipio = re.sub(r"\s+", " ", municipio).strip() or "NA"
+        md = data_re.search(rest)
+        if md:
+            ult = md.group("data")
+            before = rest[: md.start()].strip()
+            after = rest[md.end():].strip()
+            motorista = re.sub(r"\s+", " ", before).strip() or "NA"
 
-        if frota not in meta:
-            meta[frota] = {"motorista": motorista, "ult_viag": data or "NA", "uf": uf or "NA", "municipio": municipio}
+            if after:
+                toks = after.split()
+                if toks:
+                    # UF costuma ser 2 letras
+                    if re.fullmatch(r"[A-Z]{2}", toks[0]):
+                        uf = toks[0]
+                        municipio = re.sub(r"\s+", " ", " ".join(toks[1:])).strip() or "NA"
+                    else:
+                        # às vezes UF pode faltar; nesse caso tratamos o resto como município
+                        municipio = re.sub(r"\s+", " ", after).strip() or "NA"
         else:
-            # preenche só o que estava faltando
-            rec = meta[frota]
-            if (rec.get("motorista") in (None, "", "NA")) and motorista not in (None, "", "NA"):
-                rec["motorista"] = motorista
-            if (rec.get("ult_viag") in (None, "", "NA")) and data not in (None, "", "NA"):
-                rec["ult_viag"] = data
-            if (rec.get("uf") in (None, "", "NA")) and uf not in (None, "", "NA"):
-                rec["uf"] = uf
-            if (rec.get("municipio") in (None, "", "NA")) and municipio not in (None, "", "NA"):
-                rec["municipio"] = municipio
-            meta[frota] = rec
+            # sem data -> tudo é motorista
+            motorista = re.sub(r"\s+", " ", rest).strip() or "NA"
+
+        # guarda o primeiro registro encontrado por frota (estável)
+        if frota not in meta:
+            meta[frota] = {"motorista": motorista, "ult_viag": ult, "uf": uf, "municipio": municipio}
 
     return meta
-
 
 # --------------------------- META (motorista + última viagem) POR FILA ---------------------------
 
@@ -1345,58 +1335,28 @@ def main():
             orders = st.session_state.orders
             meta = st.session_state.get("meta", {}) or {}
 
-            incluir_500 = st.toggle("Incluir colunas das frotas 500", value=False)
+            # Índice rápido de posição: pos_index[sec_idx][frota] = posição (1..N)
+            pos_index = []
+            for sec in orders:
+                pos_index.append({str(f): i for i, f in enumerate(sec or [], start=1)})
 
-            # Mapeamento (apenas apresentação; não altera lógica do app)
+            # Mapeamentos por filial (somente apresentação)
             if filial == "RJ":
-                map_main = {
-                    "SUPER LONGA": 1,
-                    "LONGA": 2,
-                    "MÉDIA": 3,
-                    "CURTA": 4,
-                    "INTERNACIONAL": 0,
-                }
-                map_500 = {
-                    "SUPER LONGA (500)": 6,
-                    "LONGA (500)": 7,
-                    "MÉDIA (500)": 8,
-                    "CURTA (500)": 9,
-                    "INTERNACIONAL (500)": 5,
-                }
-            else:  # SJP
-                map_main = {
-                    "SUPER LONGA": 2,
-                    "LONGA": 0,
-                    "MÉDIA": 3,
-                    "CURTA": 4,
-                    "INTERNACIONAL": 5,
-                }
-                map_500 = {
-                    "SUPER LONGA (500)": 9,
-                    "LONGA (500)": 10,
-                    "MÉDIA (500)": 11,
-                    "CURTA (500)": 8,
-                    "INTERNACIONAL (500)": 7,
-                }
+                map_main = {"SUPER LONGA": 1, "LONGA": 2, "MÉDIA": 3, "CURTA": 4, "INTERNACIONAL": 0}
+                map_500  = {"SUPER LONGA": 6, "LONGA": 7, "MÉDIA": 8, "CURTA": 9, "INTERNACIONAL": 5}
+            else:  # SJP / PR
+                map_main = {"SUPER LONGA": 2, "LONGA": 0, "MÉDIA": 3, "CURTA": 4, "INTERNACIONAL": 5}
+                map_500  = {"SUPER LONGA": 9, "LONGA": 10, "MÉDIA": 11, "CURTA": 8, "INTERNACIONAL": 7}
 
-            # Índice de posições por seção
-            pos_index: list[dict[str, int]] = []
-            for sec_idx, sec_list in enumerate(orders):
-                d: dict[str, int] = {}
-                for i, f in enumerate(sec_list or [], start=1):
-                    d[str(f)] = i
-                pos_index.append(d)
-
-            sec_idxs = set(map_main.values())
-            if incluir_500:
-                sec_idxs |= set(map_500.values())
-
-            all_frotas = set()
-            for idx in sec_idxs:
-                if idx < len(pos_index):
-                    all_frotas.update(pos_index[idx].keys())
-
-            all_frotas = sorted(all_frotas, key=lambda x: int(x) if str(x).isdigit() else str(x))
+            # Todas as frotas lidas no PDF (principais + 500)
+            all_frotas = []
+            seen = set()
+            for sec in orders:
+                for f in (sec or []):
+                    fs = str(f)
+                    if fs not in seen:
+                        seen.add(fs)
+                        all_frotas.append(fs)
 
             c1, c2 = st.columns([1, 1])
             with c1:
@@ -1411,54 +1371,60 @@ def main():
                     all_frotas = [f for f in all_frotas if f == target]
 
             def _pos(sec_idx: int, frota: str) -> str:
-                if sec_idx >= len(pos_index):
+                if sec_idx is None or sec_idx >= len(pos_index):
                     return ""
                 return pos_index[sec_idx].get(frota, "")
 
+            # Monta no layout: FROTA | SUPER LONGA | Ult. Vg | LONGA | Ult. Vg | ...
             rows = []
             for frota in all_frotas:
+                # escolhe o "mapa" certo (principais x 500) mas mostra nas MESMAS colunas
+                try:
+                    n = int(re.sub(r"\D", "", frota) or "0")
+                except Exception:
+                    n = 0
+                mapp = map_500 if (501 <= n <= 576) else map_main
+
                 rec = meta.get(str(frota), {}) or {}
                 motorista = rec.get("motorista", "NA")
                 ult = rec.get("ult_viag", "NA")
 
-                row = {"FROTA": str(frota)}
                 any_pos = False
+                row = {("", "FROTA"): str(frota)}
 
-                # principais
                 for label in ["SUPER LONGA", "LONGA", "MÉDIA", "CURTA", "INTERNACIONAL"]:
-                    sec_idx = map_main[label]
+                    sec_idx = mapp.get(label)
                     pos = _pos(sec_idx, str(frota))
                     if pos != "":
                         any_pos = True
-                    row[label] = pos
-                    row[f"Ult. Vg ({label})"] = ult
+                    row[(label, "Posição")] = pos
+                    row[(label, "Ult. Vg")] = ult
 
-                # extras 500 (opcional)
-                if incluir_500:
-                    for label in ["SUPER LONGA (500)", "LONGA (500)", "MÉDIA (500)", "CURTA (500)", "INTERNACIONAL (500)"]:
-                        sec_idx = map_500[label]
-                        pos = _pos(sec_idx, str(frota))
-                        if pos != "":
-                            any_pos = True
-                        row[label] = pos
-                        row[f"Ult. Vg ({label})"] = ult
-
-                row["Motorista"] = motorista
+                row[("", "Motorista")] = motorista
 
                 if (not only_present) or any_pos:
                     rows.append(row)
 
-            dfc = pd.DataFrame(rows)
+            if rows:
+                dfc = pd.DataFrame(rows)
+                # garante ordem estável das colunas
+                cols = [("", "FROTA")]
+                for label in ["SUPER LONGA", "LONGA", "MÉDIA", "CURTA", "INTERNACIONAL"]:
+                    cols += [(label, "Posição"), (label, "Ult. Vg")]
+                cols += [("", "Motorista")]
+                dfc = dfc.reindex(columns=cols)
+                dfc.columns = pd.MultiIndex.from_tuples(dfc.columns)
+            else:
+                dfc = pd.DataFrame()
 
             st.dataframe(dfc, hide_index=True, use_container_width=True)
             st.download_button(
                 "Baixar consulta (CSV)",
-                data=dfc.to_csv(index=False).encode("utf-8"),
+                data=(dfc.copy().to_csv(index=False).encode("utf-8") if not dfc.empty else b""),
                 file_name="consulta.csv",
                 mime="text/csv",
+                disabled=dfc.empty,
             )
-
-
 
     with tab_select:
         st.subheader("Montagem das Filas")
