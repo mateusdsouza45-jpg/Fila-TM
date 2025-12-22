@@ -360,15 +360,72 @@ META_LINE_RE_NO_DATE = re.compile(
 
 
 def extract_meta_from_text(text: str) -> dict:
-    """Extrai Motorista e Últ. Viag. por frota (quando possível).
-    Observação importante: o campo "Interno" (formato 999.999) NÃO pode ser tratado como frota em nenhum momento.
+    """Extrai Motorista/Ult. Viag/UF/Município por frota a partir do texto do PDF.
 
-    Retorno:
-      meta[frota] = {"motorista": <str>, "ult_viag": <dd/mm/aaaa|NA>, "uf": <UF|NA>, "municipio": <str|NA>}
+    Regra importante: qualquer "interno" no formato 999.999 (ou 9.999.999 etc.)
+    é IGNORADO 100% (não participa da extração).
     """
     meta: dict[str, dict] = {}
     if not text or len(text.strip()) < 5:
         return meta
+
+    # Remove "internos" do tipo 298.691 / 9.999.999 etc.
+    interno_re = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")
+    # Corrige casos em que a data gruda no nome (ex: ROCHA23/04/2025)
+    glued_date_re = re.compile(r"(?P<pre>[A-ZÀ-Ü])(?P<date>\d{2}/\d{2}/\d{4})", re.UNICODE)
+
+    # Padrão real observado: FROTA DATA MOTORISTA UF MUNICIPIO [SEQ]
+    # (data pode faltar em alguns registros)
+    line_re = re.compile(
+        r"^\s*(?P<frota>\d{2,6})\s+"
+        r"(?:(?P<data>\d{2}/\d{2}/\d{4})\s+)?"
+        r"(?P<motorista>.+?)\s+"
+        r"(?P<uf>[A-Z]{2})\s+"
+        r"(?P<municipio>.+?)"
+        r"(?:\s+\d+)?\s*$",
+        re.UNICODE,
+    )
+
+    for raw_line in text.splitlines():
+        line = (raw_line or "").strip()
+        if not line:
+            continue
+
+        # normalizações
+        line = interno_re.sub(" ", line)                 # remove interno
+        line = glued_date_re.sub(r"\g<pre> \g<date>", line)
+        line = re.sub(r"\s+", " ", line).strip()
+
+        m = line_re.match(line)
+        if not m:
+            continue
+
+        frota = m.group("frota") or ""
+        data = (m.group("data") or "").strip() or "NA"
+        motorista = (m.group("motorista") or "").strip()
+        uf = (m.group("uf") or "").strip()
+        municipio = (m.group("municipio") or "").strip()
+
+        # Normaliza frota
+        try:
+            frota = str(int(re.sub(r"\D", "", frota)))
+        except Exception:
+            continue
+
+        motorista = re.sub(r"\s+", " ", motorista).strip() or "NA"
+        municipio = re.sub(r"\s+", " ", municipio).strip() or "NA"
+        uf = (uf or "NA").upper()
+
+        # Preenche sem sobrescrever valores bons
+        prev = meta.get(frota, {})
+        meta[frota] = {
+            "motorista": prev.get("motorista") if prev.get("motorista") not in (None, "", "NA") else motorista,
+            "ult_viag":  prev.get("ult_viag")  if prev.get("ult_viag")  not in (None, "", "NA") else data,
+            "uf":        prev.get("uf")        if prev.get("uf")        not in (None, "", "NA") else uf,
+            "municipio": prev.get("municipio") if prev.get("municipio") not in (None, "", "NA") else municipio,
+        }
+
+    return meta
 
     # Estratégia robusta (PDFMiner às vezes "cola" a data no final do nome, ex: "ROCHA23/04/2025")
     # 1) acha linhas com "Interno" 999.999 seguido de Frota
@@ -1358,17 +1415,25 @@ def main():
                         seen.add(fs)
                         all_frotas.append(fs)
 
-            c1, c2 = st.columns([1, 1])
+            c1 = st.columns(1)[0]
             with c1:
-                q_frota = st.text_input("Filtrar por frota (ex: 250)", value="").strip()
-            with c2:
-                only_present = st.toggle("Mostrar só quem aparece em alguma fila", value=True)
+                q_frotas = st.text_input("Consultar frotas (ex: 203,250,314,504)", value="").strip()
 
-            if q_frota:
-                digits = re.sub(r"\D", "", q_frota)
-                if digits:
-                    target = str(int(digits))
-                    all_frotas = [f for f in all_frotas if f == target]
+            # Permite consultar várias frotas separadas por vírgula
+            if q_frotas:
+                parts = normalize_fleet_list(q_frotas)
+                targets = []
+                seen_t = set()
+                for p in parts:
+                    digits = re.sub(r"\D", "", str(p))
+                    if not digits:
+                        continue
+                    f = str(int(digits))
+                    if f not in seen_t:
+                        seen_t.add(f)
+                        targets.append(f)
+                if targets:
+                    all_frotas = [f for f in all_frotas if f in seen_t]
 
             def _pos(sec_idx: int, frota: str) -> str:
                 if sec_idx is None or sec_idx >= len(pos_index):
@@ -1401,9 +1466,7 @@ def main():
                     row[(label, "Ult. Vg")] = ult
 
                 row[("", "Motorista")] = motorista
-
-                if (not only_present) or any_pos:
-                    rows.append(row)
+                rows.append(row)
 
             if rows:
                 dfc = pd.DataFrame(rows)
