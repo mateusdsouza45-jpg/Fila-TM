@@ -342,7 +342,7 @@ def auth_screen() -> str:
 
 # Padrão "completo" (quando existir UF/município/interno na mesma linha)
 META_LINE_RE = re.compile(
-    r"""\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\s+(?P<interno>\d{3}[\.\s]?\d{3})\b""",
+    r"""\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\b""",
     re.UNICODE | re.IGNORECASE,
 )
 
@@ -352,14 +352,18 @@ META_ROW_RE_SIMPLE = re.compile(
     re.UNICODE | re.IGNORECASE,
 )
 
-# Variante (sem data), quando existir UF/MUNICIPIO/INTERNO:
+# Variante (sem data): <FROTA> <MOTORISTA...> <UF> <MUNICIPIO...>
 META_LINE_RE_NO_DATE = re.compile(
-    r"""\b(?P<frota>\d{2,6})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\s+(?P<interno>\d{3}[\.\s]?\d{3})\b""",
+    r"""\b(?P<frota>\d{2,6})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\b""",
     re.UNICODE | re.IGNORECASE,
 )
 
 def extract_meta_from_text(text: str) -> dict:
-    """Extrai Motorista e Últ. Viag. por frota (quando possível).
+    """Extrai motorista e data da última viagem por frota.
+
+    Importante: o "interno" no formato 999.999 / 9.999.999 (ex: 308.607) NÃO deve ser usado
+    como fonte de dados e deve ser ignorado 100%. Por isso removemos esse padrão da linha
+    antes de aplicar as regex.
 
     Retorno:
       meta[frota] = {"motorista": <str>, "ult_viag": <dd/mm/aaaa|NA>, "uf": <UF|NA>, "municipio": <str|NA>}
@@ -368,114 +372,68 @@ def extract_meta_from_text(text: str) -> dict:
     if not text or len(text.strip()) < 5:
         return meta
 
-    def _norm_frota(x: str) -> str | None:
-        try:
-            return str(int(re.sub(r"\D", "", x or "")))
-        except Exception:
-            return None
+    # Ignorar "interno": 999.999 / 9.999.999 etc.
+    RE_INTERNO = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")
 
-    def _clean(s: str) -> str:
-        return re.sub(r"\s+", " ", (s or "").strip())
+    # 1) Completo (sem considerar interno): FROTA DATA MOTORISTA UF MUNICIPIO
+    re_full = re.compile(
+        r"\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\b",
+        re.UNICODE | re.IGNORECASE,
+    )
+    # 2) Médio: FROTA DATA MOTORISTA UF
+    re_mid = re.compile(
+        r"\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\b",
+        re.UNICODE | re.IGNORECASE,
+    )
+    # 3) Sem data: FROTA MOTORISTA UF MUNICIPIO
+    re_nodate = re.compile(
+        r"\b(?P<frota>\d{2,6})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\b",
+        re.UNICODE | re.IGNORECASE,
+    )
 
     for raw_line in text.splitlines():
         line = (raw_line or "").strip()
         if not line:
             continue
 
-        frota = data = motorista = uf = municipio = None
-
-        m = META_LINE_RE.search(line)
-        if m:
-            frota = m.group("frota")
-            data = (m.group("data") or "").strip()
-            motorista = (m.group("motorista") or "").strip()
-            uf = (m.group("uf") or "").strip()
-            municipio = (m.group("municipio") or "").strip()
-        else:
-            m_simple = META_ROW_RE_SIMPLE.search(line)
-            if m_simple:
-                frota = m_simple.group("frota")
-                data = (m_simple.group("data") or "").strip()
-                motorista = (m_simple.group("motorista") or "").strip()
-                uf = (m_simple.group("uf") or "").strip()
-                municipio = "NA"
-            else:
-                m2 = META_LINE_RE_NO_DATE.search(line)
-                if not m2:
-                    continue
-                frota = m2.group("frota")
-                data = "NA"
-                motorista = (m2.group("motorista") or "").strip()
-                uf = (m2.group("uf") or "").strip()
-                municipio = (m2.group("municipio") or "").strip()
-
-        frota_n = _norm_frota(frota)
-        if not frota_n:
-            continue
-
-        motorista = _clean(motorista) if motorista else "NA"
-        municipio = _clean(municipio) if municipio else "NA"
-        uf = (uf or "").strip().upper() if uf else "NA"
-        data = (data or "").strip() if data else "NA"
-
-        rec_new = {"motorista": motorista or "NA", "ult_viag": data or "NA", "uf": uf or "NA", "municipio": municipio or "NA"}
-
-        if frota_n not in meta:
-            meta[frota_n] = rec_new
-        else:
-            # Preenche campos que estavam NA, sem sobrescrever um valor já válido
-            rec_old = meta[frota_n]
-            for k in ["motorista", "ult_viag", "uf", "municipio"]:
-                if (rec_old.get(k) in (None, "", "NA")) and (rec_new.get(k) not in (None, "", "NA")):
-                    rec_old[k] = rec_new[k]
-            meta[frota_n] = rec_old
-
-    return meta
-    for raw_line in text.splitlines():
-        line = (raw_line or "").strip()
+        # remove "interno" antes de tentar casar (ignorar 100%)
+        line = RE_INTERNO.sub(" ", line)
+        line = re.sub(r"\s+", " ", line).strip()
         if not line:
             continue
 
-        m = META_LINE_RE.search(line)
-        if m:
-            frota = m.group("frota")
-            data = (m.group("data") or "").strip()
-            motorista = (m.group("motorista") or "").strip()
-            uf = (m.group("uf") or "").strip()
-            municipio = (m.group("municipio") or "").strip()
-        else:
-            m2 = META_LINE_RE_NO_DATE.search(line)
-            if not m2:
-                continue
-            frota = m2.group("frota")
-            data = "NA"
-            motorista = (m2.group("motorista") or "").strip()
-            uf = (m2.group("uf") or "").strip()
-            municipio = (m2.group("municipio") or "").strip()
+        m = re_full.search(line) or re_mid.search(line) or re_nodate.search(line)
+        if not m:
+            continue
 
-        # Normaliza frota
+        frota = m.group("frota")
         try:
             frota = str(int(re.sub(r"\D", "", frota)))
         except Exception:
             continue
 
-        # Limpa motorista/municipio (evita pegar pedaços de cabeçalho)
-        motorista = re.sub(r"\s+", " ", motorista).strip()
-        municipio = re.sub(r"\s+", " ", municipio).strip()
+        data = (m.groupdict().get("data") or "NA").strip() if "data" in m.groupdict() else "NA"
+        motorista = (m.groupdict().get("motorista") or "NA").strip()
+        uf = (m.groupdict().get("uf") or "NA").strip().upper()
+        municipio = (m.groupdict().get("municipio") or "NA").strip()
 
-        if not motorista:
-            motorista = "NA"
-        if not data:
-            data = "NA"
-        if not uf:
-            uf = "NA"
-        if not municipio:
-            municipio = "NA"
+        motorista = re.sub(r"\s+", " ", motorista).strip() or "NA"
+        municipio = re.sub(r"\s+", " ", municipio).strip() or "NA"
 
-        # Mantém o primeiro registro encontrado para cada frota (mais previsível),
-        # mas você pode trocar para "sempre sobrescrever" se preferir.
         if frota not in meta:
-            meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
+            meta[frota] = {"motorista": motorista, "ult_viag": data or "NA", "uf": uf or "NA", "municipio": municipio}
+        else:
+            # preenche só o que estava faltando
+            rec = meta[frota]
+            if (rec.get("motorista") in (None, "", "NA")) and motorista not in (None, "", "NA"):
+                rec["motorista"] = motorista
+            if (rec.get("ult_viag") in (None, "", "NA")) and data not in (None, "", "NA"):
+                rec["ult_viag"] = data
+            if (rec.get("uf") in (None, "", "NA")) and uf not in (None, "", "NA"):
+                rec["uf"] = uf
+            if (rec.get("municipio") in (None, "", "NA")) and municipio not in (None, "", "NA"):
+                rec["municipio"] = municipio
+            meta[frota] = rec
 
     return meta
 
@@ -1317,12 +1275,69 @@ def main():
     tab_list = st.tabs(tabs)
     tab_arquivo, tab_consulta, tab_select, tab_ops, tab_hist = tab_list[:5]
     tab_users = tab_list[5] if is_admin else None
-
     with tab_arquivo:
         st.subheader("Leitura do PDF")
-uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pdf_uploader")
+        uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pdf_uploader")
+
+        if st.button("Ler PDF", type="primary"):
+            if not uploaded_pdf:
+                st.warning("Selecione um arquivo PDF primeiro.")
+            else:
+                if filial == "RJ":
+                    orders, meta = extract_rj_from_uploaded_pdf(uploaded_pdf)
+                    section_labels = SECTION_TITLES_RJ
+                else:
+                    orders, meta = extract_sjp_from_uploaded_pdf(uploaded_pdf)
+                    section_labels = SECTION_LABELS_SJP
+
+                if not orders or all(len(o) == 0 for o in orders):
+                    st.error("Não foi possível ler o arquivo (nenhuma frota identificada).")
+                else:
+                    st.session_state.orders = orders
+                    st.session_state.meta = meta
+
+                    # limpa filas e seleção (mantém lógica original)
+                    st.session_state.queue_super_longa = []
+                    st.session_state.queue_longa = []
+                    st.session_state.queue_media = []
+                    st.session_state.queue_curta = []
+                    st.session_state.queue_internacional = []
+                    st.session_state.queue_super_curta = []
+                    st.session_state.queue_super_longa_500 = []
+                    st.session_state.queue_longa_500 = []
+                    st.session_state.queue_media_500 = []
+                    st.session_state.queue_curta_500 = []
+                    st.session_state.queue_internacional_500 = []
+                    st.session_state.queue_super_curta_500 = []
+                    st.session_state.selected_fleets = []
+                    st.session_state.selected_fleets_500 = []
+                    st.session_state.frotas_destacadas = []
+                    st.session_state.registro_pegaram_carga = []
+                    st.session_state.registro_excluidas = []
+                    st.success("Arquivo lido com sucesso.")
+
+                    history_append({
+                        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "user": user,
+                        "filial": filial,
+                        "action": "ler_pdf",
+                        "detail": "PDF carregado",
+                    })
+
+                    if st.session_state.mode_shared:
+                        persist_to_shared(filial)
+
+                    # tabela simples de conferência (igual ao original)
+                    rows = []
+                    for sec_idx, sec_list in enumerate(orders):
+                        sec_name = section_labels[sec_idx] if sec_idx < len(section_labels) else f"Seção {sec_idx}"
+                        for pos, frota in enumerate(sec_list, start=1):
+                            rows.append({"Seção": sec_name, "Posição": pos, "Frota": frota})
+                    if rows:
+                        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
     with tab_consulta:
-        st.subheader("Consulta (layout padrão)")
+        st.subheader("Consulta")
 
         if not st.session_state.get("orders") or all(len(o) == 0 for o in st.session_state.orders):
             st.info("Primeiro leia o PDF na aba **Arquivo**.")
@@ -1330,10 +1345,9 @@ uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pd
             orders = st.session_state.orders
             meta = st.session_state.get("meta", {}) or {}
 
-            # Toggle: incluir colunas das frotas 500 no mesmo layout
             incluir_500 = st.toggle("Incluir colunas das frotas 500", value=False)
 
-            # Mapeamento por filial (não muda lógica do app; só diz onde está cada fila no PDF)
+            # Mapeamento (apenas apresentação; não altera lógica do app)
             if filial == "RJ":
                 map_main = {
                     "SUPER LONGA": 1,
@@ -1365,19 +1379,14 @@ uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pd
                     "INTERNACIONAL (500)": 7,
                 }
 
-            # Índice de posição por seção: pos_index[sec_idx][frota] = posição (1..N)
-            pos_index = []
+            # Índice de posições por seção
+            pos_index: list[dict[str, int]] = []
             for sec_idx, sec_list in enumerate(orders):
-                d = {}
+                d: dict[str, int] = {}
                 for i, f in enumerate(sec_list or [], start=1):
                     d[str(f)] = i
                 pos_index.append(d)
 
-            def ult_col(i: int) -> str:
-                # truque: nomes repetidos no visual sem quebrar o pandas
-                return "Ult. Vg" + (" " * i)
-
-            # Frotas que vamos listar (aparecem em qualquer fila exibida)
             sec_idxs = set(map_main.values())
             if incluir_500:
                 sec_idxs |= set(map_500.values())
@@ -1401,7 +1410,11 @@ uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pd
                     target = str(int(digits))
                     all_frotas = [f for f in all_frotas if f == target]
 
-            # Monta dataframe "largo" (igual ao print)
+            def _pos(sec_idx: int, frota: str) -> str:
+                if sec_idx >= len(pos_index):
+                    return ""
+                return pos_index[sec_idx].get(frota, "")
+
             rows = []
             for frota in all_frotas:
                 rec = meta.get(str(frota), {}) or {}
@@ -1414,21 +1427,21 @@ uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pd
                 # principais
                 for label in ["SUPER LONGA", "LONGA", "MÉDIA", "CURTA", "INTERNACIONAL"]:
                     sec_idx = map_main[label]
-                    pos = pos_index[sec_idx].get(str(frota), "") if sec_idx < len(pos_index) else ""
+                    pos = _pos(sec_idx, str(frota))
                     if pos != "":
                         any_pos = True
                     row[label] = pos
-                    row[ult_col(len([k for k in row.keys() if k.startswith("Ult. Vg")]))] = ult
+                    row[f"Ult. Vg ({label})"] = ult
 
                 # extras 500 (opcional)
                 if incluir_500:
                     for label in ["SUPER LONGA (500)", "LONGA (500)", "MÉDIA (500)", "CURTA (500)", "INTERNACIONAL (500)"]:
                         sec_idx = map_500[label]
-                        pos = pos_index[sec_idx].get(str(frota), "") if sec_idx < len(pos_index) else ""
+                        pos = _pos(sec_idx, str(frota))
                         if pos != "":
                             any_pos = True
                         row[label] = pos
-                        row[ult_col(len([k for k in row.keys() if k.startswith("Ult. Vg")]))] = ult
+                        row[f"Ult. Vg ({label})"] = ult
 
                 row["Motorista"] = motorista
 
@@ -1438,7 +1451,6 @@ uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pd
             dfc = pd.DataFrame(rows)
 
             st.dataframe(dfc, hide_index=True, use_container_width=True)
-
             st.download_button(
                 "Baixar consulta (CSV)",
                 data=dfc.to_csv(index=False).encode("utf-8"),
@@ -1447,59 +1459,6 @@ uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pd
             )
 
 
-    with tab_select:     rows = []
-                    for sec_idx, sec_list in enumerate(orders):
-                        sec_name = section_labels[sec_idx] if sec_idx < len(section_labels) else f"Seção {sec_idx}"
-                        for pos, frota in enumerate(sec_list, start=1):
-                            rows.append({"Seção": sec_name, "Posição": pos, "Frota": frota})
-                    if rows:
-                        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-
-    with tab_consulta:
-        st.subheader("Consulta (posição, motorista e última viagem)")
-        if not st.session_state.get("orders") or all(len(o) == 0 for o in st.session_state.orders):
-            st.info("Primeiro leia o PDF na aba **Arquivo**.")
-        else:
-            meta = st.session_state.get("meta", {}) or {}
-            # Monta tabela base com todas as frotas lidas no PDF (ordem e seção)
-            rows = []
-            section_labels = SECTION_TITLES_RJ if filial == "RJ" else SECTION_LABELS_SJP
-            for sec_idx, sec_list in enumerate(st.session_state.orders):
-                sec_name = section_labels[sec_idx] if sec_idx < len(section_labels) else f"Seção {sec_idx+1}"
-                for posi, frota in enumerate(sec_list or [], start=1):
-                    frota_str = str(frota)
-                    mrec = (meta.get(frota_str, {}) or {}).get(sec_idx, {})
-                    rows.append({
-                        "Seção": sec_name,
-                        "Posição": posi,
-                        "Frota": frota_str,
-                        "Motorista": mrec.get("motorista", "NA"),
-                        "Ult. Viag.": mrec.get("ult_viag", "NA"),
-                    })
-
-            dfc = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Seção","Posição","Frota","Motorista","Ult. Viag."])
-
-            c1, c2 = st.columns([1,1])
-            with c1:
-                q_frota = st.text_input("Filtrar por frota (ex: 252)", value="").strip()
-            with c2:
-                q_sec = st.selectbox("Filtrar por seção", ["(todas)"] + sorted(dfc["Seção"].unique().tolist()) if not dfc.empty else ["(todas)"])
-
-            if q_frota:
-                digits = re.sub(r"\D", "", q_frota)
-                if digits:
-                    dfc = dfc[dfc["Frota"] == str(int(digits))]
-            if q_sec and q_sec != "(todas)":
-                dfc = dfc[dfc["Seção"] == q_sec]
-
-            st.dataframe(dfc, hide_index=True, use_container_width=True)
-            st.download_button(
-                "Baixar consulta (CSV)",
-                data=dfc.to_csv(index=False).encode("utf-8"),
-                file_name="consulta.csv",
-                mime="text/csv",
-            )
 
     with tab_select:
         st.subheader("Montagem das Filas")
