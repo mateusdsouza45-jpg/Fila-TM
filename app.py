@@ -1320,8 +1320,7 @@ def main():
 
     with tab_arquivo:
         st.subheader("Leitura do PDF")
-        uploaded_pdf = st.file_uploader("Se
-
+uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pdf_uploader")
     with tab_consulta:
         st.subheader("Consulta (layout padrão)")
 
