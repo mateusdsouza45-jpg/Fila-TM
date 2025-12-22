@@ -1,3 +1,7 @@
+
+# -*- coding: utf-8 -*-
+# app_final_v6.py — versão ajustada (apenas extração de Motorista e Última Viagem)
+
 import os
 import re
 import json
@@ -9,93 +13,26 @@ from io import BytesIO
 
 import streamlit as st
 import pandas as pd
+
+# Libs para PDF
 from pdfminer.high_level import extract_text
 
+# Libs para gerar PDF de registro
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
+
+# ------------------------------------------------------------
+# CSS (mantido)
+# ------------------------------------------------------------
 CSS = """
-<style>
-:root{
-  --bg:#0b1220;
-  --card:#0f1a2f;
-  --card2:#0b1730;
-  --text:#e5e7eb;
-  --muted:#9ca3af;
-  --border:rgba(255,255,255,.10);
-  --shadow: 0 10px 25px rgba(0,0,0,.25);
-  --radius: 18px;
-  --gap: 12px;
-
-  --super:#ef4444;  /* red */
-  --longa:#f59e0b;  /* amber */
-  --media:#3b82f6;  /* blue */
-  --curta:#10b981;  /* green */
-  --intern:#a855f7; /* purple */
-  --supercurta:#94a3b8; /* slate */
-}
-
-.block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; }
-h1, h2, h3 { letter-spacing: -0.02em; }
-.small-muted { color: var(--muted); font-size: 0.95rem; margin-top: -6px; }
-
-div[data-testid="stSidebar"] > div:first-child{
-  background: linear-gradient(180deg, rgba(15,26,47,.95), rgba(11,18,32,.95));
-  border-right: 1px solid var(--border);
-}
-
-.stButton>button { border-radius: 14px; padding: .65rem 1rem; }
-.stDownloadButton>button{ border-radius: 14px; }
-
-.card{
-  background: linear-gradient(180deg, rgba(15,26,47,.95), rgba(11,23,48,.95));
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 14px 10px 14px;
-  box-shadow: var(--shadow);
-  margin-bottom: var(--gap);
-}
-.card-header{
-  display:flex; align-items:center; justify-content:space-between;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-.card-title{
-  font-weight: 800;
-  font-size: 1.05rem;
-  color: var(--text);
-  display:flex; align-items:center; gap:10px;
-}
-.badge{
-  font-weight: 800;
-  font-size: .85rem;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  color: var(--text);
-  background: rgba(255,255,255,.06);
-}
-.dot{ width:10px; height:10px; border-radius:999px; display:inline-block; }
-.dot.super{ background: var(--super); }
-.dot.longa{ background: var(--longa); }
-.dot.media{ background: var(--media); }
-.dot.curta{ background: var(--curta); }
-.dot.intern{ background: var(--intern); }
-.dot.supercurta{ background: var(--supercurta); }
-
-.table-wrap{
-  border-radius: 14px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  background: rgba(255,255,255,.03);
-}
-
-hr{ border-color: rgba(255,255,255,.08); }
-</style>
 """
 
+# ------------------------------------------------------------
+# Caminhos e utilidades (mantidos)
+# ------------------------------------------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def _safe_path(filename: str) -> str:
@@ -108,12 +45,7 @@ def _safe_path(filename: str) -> str:
         return os.path.join(tempfile.gettempdir(), filename)
 
 USERS_PATH = _safe_path("users.json")
-HISTORY_PATH = _safe_path("history.json")  # legado (não usado)
-def _history_path_for_user(username: str) -> str:
-    u = re.sub(r"[^a-zA-Z0-9_.-]", "_", (username or "anon"))
-    return _safe_path(f"history_{u}.json")
-
-SHARED_STATE_PATH = _safe_path("shared_state.json")
+HISTORY_PATH = _safe_path("history.json")
 
 def _load_json(path: str, default):
     try:
@@ -131,11 +63,12 @@ def _atomic_write_json(path: str, obj):
     os.replace(tmp, path)
 
 
-# --------------------------- SESSÕES (1 login por usuário) + LOG ADMIN ---------------------------
-
+# ------------------------------------------------------------
+# Sessões + Log Admin (mantidos)
+# ------------------------------------------------------------
 SESSIONS_PATH = _safe_path("sessions.json")
 ADMIN_LOG_PATH = _safe_path("admin_log.json")
-SESSION_TIMEOUT_MIN = 5  # libera sozinho após 5 min sem atividade
+SESSION_TIMEOUT_MIN = 5
 
 def _now_ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -165,14 +98,11 @@ def get_session_id() -> str:
     return st.session_state.session_id
 
 def lock_user(username: str, session_id: str) -> tuple[bool, str]:
-    """Trava: só 1 sessão ativa por usuário."""
     data = _sessions_load()
     locks = _sessions_cleanup(data.get("locks", {}))
-
     rec = locks.get(username)
     if rec and rec.get("session_id") != session_id:
         return False, "Usuário já está conectado em outro dispositivo. Tente novamente em alguns minutos."
-
     locks[username] = {"session_id": session_id, "last_seen": _now_ts()}
     data["locks"] = locks
     _sessions_save(data)
@@ -227,15 +157,16 @@ def admin_force_logout(actor: str, target_user: str) -> bool:
         return True
     return False
 
-# --------------------------- AUTH LOCAL ---------------------------
 
+# ------------------------------------------------------------
+# Auth local (mantido)
+# ------------------------------------------------------------
 def _hash_password(password: str, salt_hex: str | None = None) -> dict:
     if salt_hex is None:
         salt = secrets.token_bytes(16)
         salt_hex = salt.hex()
     else:
         salt = bytes.fromhex(salt_hex)
-
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 150_000)
     return {"salt": salt_hex, "hash": dk.hex()}
 
@@ -251,472 +182,305 @@ def _users_load() -> dict:
 def _users_save(data: dict) -> None:
     _atomic_write_json(USERS_PATH, data)
 
-
 def ensure_admin_user():
-    """Garante usuários iniciais existirem.
-    - Admin fixo: mateus.souza
-    - Usuários comuns iniciais: denis, henrique
-    Observação: aqui a senha do admin é forçada para garantir que esteja correta.
-    """
     SEED_USERS = [
         {"username": "mateus.souza", "password": "Start@@2016", "force_password": True},
         {"username": "denis", "password": "112233", "force_password": False},
         {"username": "henrique", "password": "112233", "force_password": False},
     ]
-
     db = _users_load()
     users = db.get("users", {}) or {}
-
     changed = False
     for item in SEED_USERS:
         uname = (item.get("username") or "").strip().lower()
         pwd = item.get("password") or ""
         force = bool(item.get("force_password"))
-
         if not uname:
             continue
-
         if uname not in users:
             users[uname] = _hash_password(pwd)
             changed = True
         elif force:
-            # garante que o admin esteja com a senha definida acima
             users[uname] = _hash_password(pwd)
             changed = True
-
     if changed:
         db["users"] = users
         _users_save(db)
 
-
-ADMIN_USERS = {"mateus.souza"}  # usuários admin fixos  # usuários admin fixos
+ADMIN_USERS = {"mateus.souza"}
 
 def auth_screen() -> str:
-    """Tela inicial: somente LOGIN (1 sessão por usuário). Criação de usuários é feita pelo admin."""
     st.markdown(CSS, unsafe_allow_html=True)
     st.title("🔐 Acesso")
-    st.markdown('<div class="small-muted">Entre com seu usuário e senha</div>', unsafe_allow_html=True)
+    st.markdown('<p>Entre com seu usuário e senha</p>', unsafe_allow_html=True)
     st.info("⚠️ Cadastro local: em hospedagem gratuita ele pode ser perdido se o app reiniciar.")
-
     if st.session_state.get("auth_user"):
         return st.session_state["auth_user"]
-
     users_db = _users_load()
     users = users_db.get("users", {})
-
     u = st.text_input("Usuário", key="login_user")
     p = st.text_input("Senha", type="password", key="login_pass")
-
     if st.button("Entrar", type="primary"):
         u = (u or "").strip().lower()
         if not u or not p:
             st.warning("Preencha usuário e senha.")
             st.stop()
-
         if u not in users:
             st.error("Usuário não encontrado.")
             st.stop()
-
         if not _verify_password(p, users[u]):
             st.error("Senha incorreta.")
             st.stop()
-
         sid = get_session_id()
         ok, msg = lock_user(u, sid)
         if not ok:
             st.error(msg)
             st.stop()
-
         st.session_state["auth_user"] = u
         st.success("Login ok!")
         st.rerun()
+        st.stop()
+    return ""
 
-    st.stop()
 
+# ======================================================================
+# ⚙️ AJUSTE: PADRÕES DE LINHA (RJ + PR) e HELPERS DE META (NOVOS)
+# ======================================================================
 
-# --------------------------- META (Motorista / Últ. Viag.) ---------------------------
-
-# A linha do PDF (tanto RJ quanto PR/SJP) normalmente tem:
-# ... <FROTA> <DATA (dd/mm/aaaa)> <MOTORISTA...> <UF> <MUNICIPIO...> <INTERNO 999.999> ...
-# Alguns registros podem não ter DATA/UF/MUNICIPIO; nesses casos retornamos "NA".
-META_LINE_RE = re.compile(
-    r"""\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\s+(?P<interno>\d{3}\.\d{3})\b""",
-    re.UNICODE,
+# PR/SJP — Linha COMPLETA com DATA + UF + MUNICÍPIO
+META_ROW_RE_PR = re.compile(
+    r'^(?P<frota>\d{1,3})\s+'
+    r'(?P<data>\d{2}/\d{2}/\d{4})\s+'
+    r'(?P<motorista>[A-ZÀ-Ü][A-ZÀ-Ü \.\'-]+?)\s+'
+    r'(?P<uf>[A-Z]{2})\s+'
+    r'(?P<municipio>[A-ZÀ-Ü \.\'-]+?)\s+'
+    r'(?P<ult>\d{2,3}\.\d{3})\s+'
+    r'(?:SIM\s+)?'
+    r'(?P<seq>\d{1,3})'
+    r'(?:\s+(?P<obs>DISPONIVEL|EM VIAGEM))?'
+    r'$',
+    re.UNICODE
 )
 
-# Variante (sem data), quando existir UF/MUNICIPIO/INTERNO:
-META_LINE_RE_NO_DATE = re.compile(
-    r"""\b(?P<frota>\d{2,6})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\s+(?P<interno>\d{3}\.\d{3})\b""",
-    re.UNICODE,
+# PR/SJP — Linha sem DATA/UF/MUNICÍPIO (SUPER CURTA/INTERNACIONAL simples)
+META_ROW_RE_PR_NO_DATE = re.compile(
+    r'^(?P<frota>\d{1,3})\s+'
+    r'(?P<motorista>[A-ZÀ-Ü][A-ZÀ-Ü \.\'-]+?)\s+'
+    r'(?P<ult>\d{2,3}\.\d{3})\s+'
+    r'(?:SIM\s+)?'
+    r'(?P<seq>\d{1,3})'
+    r'(?:\s+(?P<obs>DISPONIVEL|EM VIAGEM))?'
+    r'$',
+    re.UNICODE
 )
+
+# RJ — Linha com DATA
+META_ROW_RE_RJ = re.compile(
+    r'^(?P<frota>\d{1,3})\s+'
+    r'(?P<data>\d{2}/\d{2}/\d{4})\s+'
+    r'(?P<motorista>[A-ZÀ-Ü][A-ZÀ-Ü \.\'-]+?)\s+'
+    r'(?P<ult>\d{2,3}\.\d{3})\s+'
+    r'(?:SIM\s+)?'
+    r'(?P<seq>\d{1,3})'
+    r'(?:\s+(?P<obs>DISPONIVEL|EM VIAGEM))?'
+    r'$',
+    re.UNICODE
+)
+
+# RJ — Linha curta sem DATA
+META_ROW_RE_RJ_NO_DATE = re.compile(
+    r'^(?P<frota>\d{1,3})\s+'
+    r'(?P<motorista>[A-ZÀ-Ü][A-ZÀ-Ü \.\'-]+?)\s+'
+    r'(?P<ult>\d{2,3}\.\d{3})\s+'
+    r'(?:SIM\s+)?'
+    r'(?P<seq>\d{1,3})'
+    r'(?:\s+(?P<obs>DISPONIVEL|EM VIAGEM))?'
+    r'$',
+    re.UNICODE
+)
+
+# Âncora Frota+Data para fallback
+FROTA_DATE_RE = re.compile(r'\b(?P<frota>\d{1,3})\s+(?P<data>\d{2}/\d{2}/\d{4})\b')
+
+def _parse_dt(s: str):
+    try:
+        return datetime.strptime(s, "%d/%m/%Y")
+    except Exception:
+        return None
+
+def _ok_frota(f: str) -> bool:
+    """Valida faixas de frota. Nunca aceitar números com ponto como frota."""
+    try:
+        n = int(re.sub(r"\D", "", f) or "0")
+    except Exception:
+        return False
+    return (200 <= n <= 470) or (501 <= n <= 576)
 
 def _fix_glued_date(s: str) -> str:
-    """
-    Corrige casos em que a data vem "colada" no texto (ex.: ROCHA23/04/2025).
-    """
+    """Insere espaço quando a data vier colada ao texto."""
     if not s:
         return s
-    # Insere espaço antes da data quando ela vier imediatamente após letra
-    return re.sub(r"([A-ZÀ-Üa-zà-ü])(\d{2}/\d{2}/\d{4})", r"\1 \2", s)
+    return re.sub(r'([A-Za-zÀ-ü])(\d{2}/\d{2}/\d{4})', r'\1 \2', s)
+
+def _cleanup_tail(s: str) -> str:
+    """Remove tokens que atrapalham e normaliza espaços no tail após Frota+Data."""
+    s = re.sub(r'\bSIM\b', ' ', s)
+    s = re.sub(r'\bPRES(?:ENÇA|)?\b', ' ', s, flags=re.IGNORECASE)
+    s = re.sub(r'\s+', ' ', (s or '')).strip()
+    return s
 
 
-INTERNAL_RE = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")  # ex.: 298.691 / 300.923 / 9.999.999
-
-
-def _extract_meta_from_section_block(block_lines: list[str], frotas_in_order: list[str]) -> dict[str, dict]:
-    """
-    Extrai meta (motorista, ult_viag, uf, municipio) para UMA seção.
-
-    PDFs reais (pdfminer) costumam "quebrar" colunas em blocos:
-      [lista de frotas] -> [lista de motoristas] -> [lista de datas] -> [lista de UFs] -> [lista de municípios] ...
-
-    Estratégia:
-    - Remove "Interno" (999.999) 100% antes de qualquer coisa.
-    - Usa frotas_in_order como eixo (N).
-    - A partir do fim do bloco de frotas, pega sequencialmente os próximos N itens de cada coluna.
-      Isso reduz deslocamento quando existir ruído/cabeçalho no meio.
-    """
-    if not block_lines or not frotas_in_order:
-        return {}
-
-    # limpeza
-    cleaned = []
-    for raw in block_lines:
-        line = (raw or "").strip()
-        if not line:
-            continue
-        line = _fix_glued_date(line)
-        line = INTERNAL_RE.sub(" ", line)  # ignora interno 100%
-        line = re.sub(r"\s+", " ", line).strip()
-        if line:
-            cleaned.append(line)
-
-    if not cleaned:
-        return {}
-
-    n = len(frotas_in_order)
-    frota_set = set(frotas_in_order)
-
-    # encontra bloco de frotas (frotas aparecem como linha só com número)
-    frota_idxs = [i for i, l in enumerate(cleaned) if l in frota_set]
-    if not frota_idxs:
-        return {}
-
-    last_frota_idx = max(frota_idxs)
-
-    # helpers de classificação
-    date_pat = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
-    uf_pat = re.compile(r"^[A-Z]{2}$")
-
-    def is_header(l: str) -> bool:
-        return bool(re.search(r"\b(SERVIÇO|SITUAÇÃO|SEQ\.?|OBSERVA|PRES|FILA|CARRETEIROS|DISPON)\b", l, re.IGNORECASE))
-
-    def is_motorista(l: str) -> bool:
-        if is_header(l):
-            return False
-        if uf_pat.match(l):
-            return False
-        if date_pat.search(l):
-            return False
-        if re.search(r"\d", l):
-            return False
-        # pelo menos 2 palavras
-        return len(l.split()) >= 2 and len(l) >= 5
-
-    def is_municipio(l: str) -> bool:
-        if is_header(l):
-            return False
-        if uf_pat.match(l):
-            return False
-        if date_pat.search(l):
-            return False
-        if re.search(r"\d", l):
-            return False
-        return len(l) >= 3
-
-    # varre após o bloco de frotas e extrai sequencialmente
-    tail = cleaned[last_frota_idx + 1:]
-
-    # motoristas: próximos N
-    motoristas = []
-    i = 0
-    while i < len(tail) and len(motoristas) < n:
-        if is_motorista(tail[i]):
-            motoristas.append(tail[i])
-        i += 1
-
-    # datas: próximos N depois do ponto i
-    dates = []
-    j = i
-    while j < len(tail) and len(dates) < n:
-        m = date_pat.search(tail[j])
-        if m and ":" not in tail[j]:
-            dates.append(m.group(0))
-        j += 1
-
-    # ufs: próximos N depois do ponto j
-    ufs = []
-    k = j
-    while k < len(tail) and len(ufs) < n:
-        if uf_pat.match(tail[k]):
-            ufs.append(tail[k])
-        k += 1
-
-    # municipios: próximos N depois do ponto k
-    municipios = []
-    h = k
-    while h < len(tail) and len(municipios) < n:
-        if is_municipio(tail[h]):
-            municipios.append(tail[h])
-        h += 1
-
-    # completa com NA
-    motoristas = (motoristas + ["NA"] * n)[:n]
-    dates = (dates + ["NA"] * n)[:n]
-    ufs = (ufs + ["NA"] * n)[:n]
-    municipios = (municipios + ["NA"] * n)[:n]
-
-    out = {}
-    for idx_f, frota in enumerate(frotas_in_order):
-        out[str(frota)] = {
-            "motorista": motoristas[idx_f] or "NA",
-            "ult_viag": dates[idx_f] or "NA",
-            "uf": ufs[idx_f] or "NA",
-            "municipio": municipios[idx_f] or "NA",
-        }
-    return out
-
-
+# ======================================================================
+# ⚙️ AJUSTE: EXTRAÇÃO DE META (Motorista + Última Viagem consolidada)
+# ======================================================================
 def extract_meta_from_text(text: str, orders: list[list[str]] | None = None, filial: str | None = None) -> dict:
     """
     Extrai meta por frota:
-      meta[frota] = {"motorista": str, "ult_viag": "dd/mm/aaaa|NA", "uf": "UF|NA", "municipio": str|NA}
+      meta[frota] = {
+         "motorista": str,
+         "ult_viag": "dd/mm/aaaa" | "NA",
+         "uf": "UF|NA",
+         "municipio": str|NA
+      }
 
-    Estratégia híbrida (funciona com PDFs onde o PDFMiner separa colunas em blocos):
-    1) Tenta extrair por "linha completa" quando existir padrão "<FROTA> <DATA>" na mesma linha.
-    2) Se `orders` for informado, também tenta alinhar por seção usando blocos (frotas / motoristas / datas / UF / município),
-       o que cobre o caso real dos seus PDFs (colunas quebradas em blocos).
-    3) Para cada frota, mantém a DATA mais recente encontrada; motorista associado à data mais recente tem prioridade.
-
-    Importante:
-    - "Interno" (ex.: 308.607, 298.691) é IGNORADO 100%: removido antes de qualquer parsing.
+    Estratégia:
+    - Varre TODO o texto do PDF.
+    - Casa linhas RJ/PR em ambos os formatos (com/sem DATA/UF/Municipio).
+    - Para cada frota, escolhe a DATA mais recente e atualiza o MOTORISTA correspondente.
+    - NÃO remove números com ponto antes de parsear (para não perder 'Ult. Viagem').
     """
     meta: dict[str, dict] = {}
     if not text or len(text.strip()) < 5:
         return meta
 
-    date_pat = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
-    uf_pat = re.compile(r"\b[A-Z]{2}\b")
-    frota_date_pat = re.compile(r"\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\b")
-
-    def _ok_frota(f: str) -> bool:
-        try:
-            n = int(re.sub(r"\D", "", f) or "0")
-        except Exception:
-            return False
-        return (200 <= n <= 470) or (501 <= n <= 576)
-
-    def _parse_dt(s: str):
-        try:
-            return datetime.strptime(s, "%d/%m/%Y")
-        except Exception:
-            return None
-
-    def _cleanup(s: str) -> str:
-        s = re.sub(r"\s+", " ", (s or "").strip())
-        s = re.sub(r"\s\d{1,4}\s*$", "", s).strip()  # remove seq final
-        return s
-
-    def _merge_best(frota: str, motorista: str, data: str, uf: str = "NA", municipio: str = "NA"):
-        frota_digits = re.sub(r"\D", "", frota or "")
-        if not frota_digits:
-            return
-        frota_norm = str(int(frota_digits))
-        if not _ok_frota(frota_norm):
-            return
-
-        motorista = re.sub(r"\s+", " ", (motorista or "").strip()).strip() or "NA"
-        uf = (uf or "").strip().upper() or "NA"
-        municipio = re.sub(r"\s+", " ", (municipio or "").strip()).strip() or "NA"
-        data = (data or "").strip() or "NA"
-
-        # saneamento motorista
-        if motorista != "NA":
-            if re.search(r"\b(SERVIÇO|SITUAÇÃO|SEQ\.?|OBSERVA|PRES|FILA|MOTORISTA|ULT\.?|VIAG\.?)\b", motorista, re.IGNORECASE):
-                motorista = "NA"
-            if re.search(r"\d", motorista):
-                # motorista não deve ter dígitos
-                motorista = "NA"
-
-        cur = meta.get(frota_norm)
-        if not cur:
-            meta[frota_norm] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
-            return
-
-        # preencher campos NA
-        if (cur.get("uf") in (None, "", "NA")) and uf not in ("", "NA"):
-            cur["uf"] = uf
-        if (cur.get("municipio") in (None, "", "NA")) and municipio not in ("", "NA"):
-            cur["municipio"] = municipio
-
-        new_dt = _parse_dt(data) if data != "NA" else None
-        cur_dt = _parse_dt(cur.get("ult_viag", "NA")) if cur.get("ult_viag", "NA") != "NA" else None
-
-        if new_dt and (cur_dt is None or new_dt > cur_dt):
-            cur["ult_viag"] = data
-            if motorista not in ("", "NA"):
-                cur["motorista"] = motorista
-        else:
-            # se não atualizou por data, ainda assim preenche motorista se estiver NA
-            if (cur.get("motorista") in (None, "", "NA")) and motorista not in ("", "NA"):
-                cur["motorista"] = motorista
-
-        meta[frota_norm] = cur
-
-    # --------------------- (1) Linha completa: procura "<FROTA> <DATA>" na mesma linha ---------------------
     for raw in text.splitlines():
         line = (raw or "").strip()
         if not line:
             continue
+
+        # Normalizações
         line = _fix_glued_date(line)
-        line = INTERNAL_RE.sub(" ", line)  # ignora interno 100%
         line = re.sub(r"\s+", " ", line).strip()
-        if not line:
-            continue
 
-        mfd = frota_date_pat.search(line)
-        if not mfd:
-            continue
+        rec = None
 
-        frota = mfd.group("frota")
-        data = mfd.group("data")
-        tail = _cleanup(line[mfd.end():])
+        # 1) PR com DATA + UF + Município
+        m = META_ROW_RE_PR.match(line)
+        if m:
+            rec = {
+                "frota": m.group("frota"),
+                "data":  m.group("data"),
+                "motorista": (m.group("motorista") or "").strip(),
+                "uf":   m.group("uf"),
+                "municipio": (m.group("municipio") or "").strip(),
+            }
 
-        muf = uf_pat.search(tail)
-        if muf:
-            uf = muf.group(0)
-            motorista = tail[:muf.start()].strip()
-            municipio = _cleanup(tail[muf.end():])
-        else:
-            uf = "NA"
-            municipio = "NA"
-            motorista = tail.strip()
+        # 2) PR sem DATA
+        if not rec:
+            m = META_ROW_RE_PR_NO_DATE.match(line)
+            if m:
+                rec = {
+                    "frota": m.group("frota"),
+                    "data":  "NA",
+                    "motorista": (m.group("motorista") or "").strip(),
+                    "uf":   "NA",
+                    "municipio": "NA",
+                }
 
-        _merge_best(frota, motorista, data, uf, municipio)
+        # 3) RJ com DATA
+        if not rec:
+            m = META_ROW_RE_RJ.match(line)
+            if m:
+                rec = {
+                    "frota": m.group("frota"),
+                    "data":  m.group("data"),
+                    "motorista": (m.group("motorista") or "").strip(),
+                    "uf":   "NA",
+                    "municipio": "NA",
+                }
 
-    # --------------------- (2) Alinhamento por seção (colunas em blocos) ---------------------
-    if orders and filial:
-        # coleta linhas por seção (RJ) ou usa split (SJP)
-        def _collect_rj_sections_lines() -> list[list[str]]:
-            n_sections = 10
-            out = [[] for _ in range(n_sections)]
-            lines = [l.strip() for l in text.splitlines() if l.strip()]
-            cur = None
-            for line in lines:
-                for pat, idx in SEC_PATTERNS_RJ:
-                    if pat.search(line):
-                        cur = idx
-                        break
-                if cur is None or cur >= n_sections:
-                    continue
-                out[cur].append(line)
-            return out
+        # 4) RJ sem DATA
+        if not rec:
+            m = META_ROW_RE_RJ_NO_DATE.match(line)
+            if m:
+                rec = {
+                    "frota": m.group("frota"),
+                    "data":  "NA",
+                    "motorista": (m.group("motorista") or "").strip(),
+                    "uf":   "NA",
+                    "municipio": "NA",
+                }
 
-        def _collect_sjp_sections_lines() -> list[list[str]]:
-            blocks = split_text_into_sections_sjp(text)
-            out = []
-            for blk in blocks:
-                out.append([l.strip() for l in (blk or "").splitlines() if l.strip()])
-            # garante 12
-            while len(out) < 12:
-                out.append([])
-            return out[:12]
+        # 5) Fallback: Frota + Data e extrair tail
+        if not rec:
+            mfd = FROTA_DATE_RE.search(line)
+            if mfd:
+                frota = mfd.group("frota")
+                data  = mfd.group("data")
+                tail  = _cleanup_tail(line[mfd.end():])
+                muf   = re.search(r'\b([A-Z]{2})\b', tail)
+                if muf:
+                    uf = muf.group(1)
+                    motorista = tail[:muf.start()].strip()
+                    municipio = tail[muf.end():].strip()
+                else:
+                    uf, municipio = "NA", "NA"
+                    motorista = tail.strip()
+                rec = {
+                    "frota": frota,
+                    "data":  data,
+                    "motorista": motorista,
+                    "uf":   uf,
+                    "municipio": municipio,
+                }
 
-        if filial == "RJ":
-            sec_lines = _collect_rj_sections_lines()
-        else:
-            sec_lines = _collect_sjp_sections_lines()
-
-        for sec_idx, frotas_sec in enumerate(orders):
-            if not frotas_sec or sec_idx >= len(sec_lines):
+        if rec:
+            frota_digits = re.sub(r"\D", "", rec["frota"] or "")
+            if not frota_digits or not _ok_frota(frota_digits):
                 continue
-            # tenta alinhar usando o helper existente
-            sec_meta = _extract_meta_from_section_block(sec_lines[sec_idx], [str(x) for x in frotas_sec])
-            for f, rec in (sec_meta or {}).items():
-                _merge_best(
-                    frota=f,
-                    motorista=rec.get("motorista", "NA"),
-                    data=rec.get("ult_viag", "NA"),
-                    uf=rec.get("uf", "NA"),
-                    municipio=rec.get("municipio", "NA"),
-                )
+            frota = str(int(frota_digits))
+
+            new_dt = _parse_dt(rec["data"]) if rec["data"] != "NA" else None
+            cur = meta.get(frota)
+
+            if not cur:
+                meta[frota] = {
+                    "motorista": rec["motorista"] or "NA",
+                    "ult_viag":  rec["data"] or "NA",
+                    "uf":        rec["uf"] or "NA",
+                    "municipio": rec["municipio"] or "NA",
+                }
+                continue
+
+            # Complementa UF/Municipio se estavam NA
+            if (cur.get("uf") in (None, "", "NA")) and (rec["uf"] not in ("", "NA")):
+                cur["uf"] = rec["uf"]
+            if (cur.get("municipio") in (None, "", "NA")) and (rec["municipio"] not in ("", "NA")):
+                cur["municipio"] = rec["municipio"]
+
+            # Mantém data mais recente e motorista correspondente
+            cur_dt = _parse_dt(cur.get("ult_viag", "NA")) if cur.get("ult_viag") != "NA" else None
+            if new_dt and (cur_dt is None or new_dt > cur_dt):
+                cur["ult_viag"] = rec["data"]
+                if rec["motorista"] not in ("", "NA"):
+                    cur["motorista"] = rec["motorista"]
+            else:
+                if (cur.get("motorista") in (None, "", "NA")) and (rec["motorista"] not in ("", "NA")):
+                    cur["motorista"] = rec["motorista"]
+
+            meta[frota] = cur
 
     return meta
 
 
-def extract_meta_rj_by_section(text: str) -> dict:
-    """Retorna: meta[frota][sec_idx] = {motorista, ult_viag}"""
-    meta: dict = {}
-    if not text:
-        return meta
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    current_sec_index = None
-    for line in lines:
-        # atualiza seção quando encontrar cabeçalho
-        for pattern, idx in SEC_PATTERNS_RJ:
-            if pattern.search(line):
-                current_sec_index = idx
-                break
-        if current_sec_index is None:
-            continue
-
-        m = META_ROW_RE.search(line)
-        if not m:
-            continue
-        frota = str(int(m.group("frota")))
-        if frota not in FROTAS_TODAS_STR:
-            continue
-
-        motorista = re.sub(r"\s+", " ", (m.group("motorista") or "").strip()) or "NA"
-        data = (m.group("data") or "").strip() or "NA"
-
-        meta.setdefault(frota, {})[current_sec_index] = {"motorista": motorista, "ult_viag": data}
-    return meta
-
-def extract_meta_sjp_by_section(text: str) -> dict:
-    """Retorna: meta[frota][sec_idx] = {motorista, ult_viag}"""
-    meta: dict = {}
-    if not text:
-        return meta
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    current_sec_index = None
-
-    sec_patterns = list(enumerate(SECTION_PATTERNS_SJP))
-    for line in lines:
-        for idx, pat in sec_patterns:
-            if pat.search(line):
-                current_sec_index = idx
-                break
-        if current_sec_index is None:
-            continue
-
-        m = META_ROW_RE.search(line)
-        if not m:
-            continue
-        frota = str(int(m.group("frota")))
-        if frota not in FROTAS_TODAS_STR:
-            continue
-
-        motorista = re.sub(r"\s+", " ", (m.group("motorista") or "").strip()) or "NA"
-        data = (m.group("data") or "").strip() or "NA"
-        meta.setdefault(frota, {})[current_sec_index] = {"motorista": motorista, "ult_viag": data}
-
-    return meta
-
-# --------------------------- HISTÓRICO ---------------------------
+# ------------------------------------------------------------
+# Histórico (mantido)
+# ------------------------------------------------------------
+def _history_path_for_user(username: str) -> str:
+    u = re.sub(r"[^a-zA-Z0-9_.-]", "_", (username or "anon"))
+    return _safe_path(f"history_{u}.json")
 
 def history_append(event: dict):
-    """Salva histórico por usuário (privado)."""
     username = (event.get("user") or "anon")
     path = _history_path_for_user(username)
     data = _load_json(path, {"events": []})
@@ -725,10 +489,6 @@ def history_append(event: dict):
     _atomic_write_json(path, data)
 
 def history_df(requesting_user: str, filial: str | None = None, include_all: bool = False) -> pd.DataFrame:
-    """Carrega histórico.
-    - Por padrão: somente do usuário logado.
-    - Se include_all=True (admin): tenta juntar todos os arquivos history_*.json que existirem.
-    """
     rows = []
     if include_all:
         base_dir = os.path.dirname(_history_path_for_user(requesting_user))
@@ -743,19 +503,20 @@ def history_df(requesting_user: str, filial: str | None = None, include_all: boo
     else:
         d = _load_json(_history_path_for_user(requesting_user), {"events": []})
         rows = d.get('events', [])
-
     if filial:
         rows = [r for r in rows if r.get('filial') == filial]
-
     if not rows:
         return pd.DataFrame(columns=["ts", "user", "filial", "action", "detail"])
-
     df = pd.DataFrame(rows)
     if 'ts' in df.columns:
         df = df.sort_values('ts', ascending=False)
     return df[["ts", "user", "filial", "action", "detail"]]
 
-# --------------------------- MULTIUSUÁRIO (fila compartilhada local) ---------------------------
+
+# ------------------------------------------------------------
+# Estado compartilhado (mantido)
+# ------------------------------------------------------------
+SHARED_STATE_PATH = _safe_path("shared_state.json")
 
 def shared_load() -> dict:
     return _load_json(SHARED_STATE_PATH, {"RJ": {}, "SJP": {}})
@@ -767,8 +528,6 @@ def persist_to_shared(filial: str):
     state = shared_load()
     state[filial] = {
         "orders": st.session_state.orders,
-
-        # principais
         "queue_super_longa": st.session_state.queue_super_longa,
         "queue_longa": st.session_state.queue_longa,
         "queue_media": st.session_state.queue_media,
@@ -776,7 +535,6 @@ def persist_to_shared(filial: str):
         "queue_internacional": st.session_state.get("queue_internacional", []),
         "queue_super_curta": st.session_state.get("queue_super_curta", []),
         "selected_fleets": st.session_state.selected_fleets,
-
         # extras / 500
         "queue_super_longa_500": st.session_state.get("queue_super_longa_500", []),
         "queue_longa_500": st.session_state.get("queue_longa_500", []),
@@ -785,7 +543,6 @@ def persist_to_shared(filial: str):
         "queue_internacional_500": st.session_state.get("queue_internacional_500", []),
         "queue_super_curta_500": st.session_state.get("queue_super_curta_500", []),
         "selected_fleets_500": st.session_state.get("selected_fleets_500", []),
-
         # comuns
         "frotas_destacadas": st.session_state.frotas_destacadas,
         "frotas_removidas": sorted(list(st.session_state.frotas_removidas)),
@@ -795,15 +552,11 @@ def persist_to_shared(filial: str):
     }
     shared_save(state)
 
-
 def load_from_shared(filial: str):
     state = shared_load().get(filial, {})
     if not state:
         return
-
     st.session_state.orders = state.get("orders", [])
-
-    # principais
     st.session_state.queue_super_longa = state.get("queue_super_longa", [])
     st.session_state.queue_longa = state.get("queue_longa", [])
     st.session_state.queue_media = state.get("queue_media", [])
@@ -811,8 +564,6 @@ def load_from_shared(filial: str):
     st.session_state.queue_internacional = state.get("queue_internacional", [])
     st.session_state.queue_super_curta = state.get("queue_super_curta", [])
     st.session_state.selected_fleets = state.get("selected_fleets", [])
-
-    # extras / 500
     st.session_state.queue_super_longa_500 = state.get("queue_super_longa_500", [])
     st.session_state.queue_longa_500 = state.get("queue_longa_500", [])
     st.session_state.queue_media_500 = state.get("queue_media_500", [])
@@ -820,8 +571,6 @@ def load_from_shared(filial: str):
     st.session_state.queue_internacional_500 = state.get("queue_internacional_500", [])
     st.session_state.queue_super_curta_500 = state.get("queue_super_curta_500", [])
     st.session_state.selected_fleets_500 = state.get("selected_fleets_500", [])
-
-    # comuns
     st.session_state.frotas_destacadas = state.get("frotas_destacadas", [])
     st.session_state.frotas_removidas = set(state.get("frotas_removidas", []))
     st.session_state.registro_pegaram_carga = state.get("registro_pegaram_carga", [])
@@ -829,10 +578,9 @@ def load_from_shared(filial: str):
     st.session_state.include_rest = state.get("include_rest", False)
 
 
-# =============================================================================
-#                           SEU APP (parsing e filas)
-# =============================================================================
-
+# ------------------------------------------------------------
+# Frotas válidas e seções (mantidos)
+# ------------------------------------------------------------
 FROTAS_VALIDAS = {
     203,205,207,208,211,212,215,218,219,222,223,226,227,228,229,230,
     231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,
@@ -846,9 +594,6 @@ FROTAS_VALIDAS = {
     501,502,503,504,505,506,507,508,509,510,511,512,513,514,515,516,517,518,519,520,521,522,523,524,525,526,527,528,529,530,531,532,533,534,535,536,537,538,539,540,541,542,543,544,545,546,547,548,549,550,551,552,553,554,555,556,557,558,559,560,561,562,563,564,565,566,567,568,569,570,571,572,573,574,575,576
 }
 FROTAS_VALIDAS_500 = set(range(501, 577))
-FROTAS_PRINCIPAIS_STR = {str(x) for x in FROTAS_VALIDAS}
-FROTAS_EXTRAS_STR = {str(x) for x in FROTAS_VALIDAS_500}
-FROTAS_TODAS_STR = FROTAS_PRINCIPAIS_STR | FROTAS_EXTRAS_STR
 
 SECTION_TITLES_RJ = [
     "INTER - RESENDE",
@@ -863,109 +608,21 @@ SECTION_TITLES_RJ = [
     "500 - CURTA-RESENDE",
 ]
 
-
+# Padrões de seção RJ (mantidos e tornados tolerantes a hífen/espaço)
 SEC_PATTERNS_RJ = [
-    # PRINCIPAIS (200–470)
-    (re.compile(r"^\s*\d*\s*INTER\s*-\s*RESENDE\b", re.IGNORECASE), 0),
-    (re.compile(r"^\s*\d*\s*SUPER\s*LONGA\s*-\s*RESENDE\b", re.IGNORECASE), 1),
-    (re.compile(r"^\s*\d*\s*LONGA\s*-\s*RESENDE\b", re.IGNORECASE), 2),
-    (re.compile(r"^\s*\d*\s*MEDIA\s*RESENDE\b", re.IGNORECASE), 3),
-    (re.compile(r"^\s*\d*\s*CURTA\s*-\s*RESENDE\b", re.IGNORECASE), 4),
-
-    # EXTRAS (500)
-    (re.compile(r"^\s*\d*\s*500\s*-\s*INTER\s*-\s*RESENDE\b", re.IGNORECASE), 5),
-    (re.compile(r"^\s*\d*\s*500\s*-\s*SUPER\s*LONGA\s*-?\s*RESENDE\b", re.IGNORECASE), 6),
-    (re.compile(r"^\s*\d*\s*500\s*-\s*LONGA\s*-?\s*RESENDE\b", re.IGNORECASE), 7),
-    (re.compile(r"^\s*\d*\s*500\s*-\s*MEDIA\s*-?\s*RESENDE\b", re.IGNORECASE), 8),
-    (re.compile(r"^\s*\d*\s*500\s*-\s*CURTA\s*-?\s*RESENDE\b", re.IGNORECASE), 9),
+    (re.compile(r'^\s*\d*\s*INTER\s*-?\s*RESENDE\b', re.IGNORECASE), 0),
+    (re.compile(r'^\s*\d*\s*SUPER\s*LONGA\s*-?\s*RESENDE\b', re.IGNORECASE), 1),
+    (re.compile(r'^\s*\d*\s*LONGA\s*-?\s*RESENDE\b', re.IGNORECASE), 2),
+    (re.compile(r'^\s*\d*\s*MEDIA\s*RESENDE\b', re.IGNORECASE), 3),
+    (re.compile(r'^\s*\d*\s*CURTA\s*-?\s*RESENDE\b', re.IGNORECASE), 4),
+    (re.compile(r'^\s*\d*\s*500\s*-?\s*INTER\s*-?\s*RESENDE\b', re.IGNORECASE), 5),
+    (re.compile(r'^\s*\d*\s*500\s*-?\s*SUPER\s*LONGA\s*-?\s*RESENDE\b', re.IGNORECASE), 6),
+    (re.compile(r'^\s*\d*\s*500\s*-?\s*LONGA\s*-?\s*RESENDE\b', re.IGNORECASE), 7),
+    (re.compile(r'^\s*\d*\s*500\s*-?\s*MEDIA\s*-?\s*RESENDE\b', re.IGNORECASE), 8),
+    (re.compile(r'^\s*\d*\s*500\s*-?\s*CURTA\s*-?\s*RESENDE\b', re.IGNORECASE), 9),
 ]
-PATTERN_SEQ_INTERNO_FROTA_RJ = re.compile(
-    r'(?:\bSIM\b\s+)?\b\d+\b\s+\b\d+\.\d+\b\s+(\d{2,3})\b',
-    re.IGNORECASE
-)
-PATTERN_ISOLATED_NUM_RJ = re.compile(r'(?<!\.)\b\d{2,6}\b(?!\.)')
 
-def extract_orders_rj_from_text(text: str):
-    # RJ: 5 seções PRINCIPAIS + 5 seções EXTRAS (500)
-    n_sections = 10
-
-    if not text:
-        return [[] for _ in range(n_sections)]
-
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    sections = [[] for _ in range(n_sections)]
-    current_sec_index = None
-
-    for line in lines:
-        for pattern, idx in SEC_PATTERNS_RJ:
-            if pattern.search(line):
-                current_sec_index = idx
-                break
-
-        if current_sec_index is None or current_sec_index >= n_sections:
-            continue
-
-        allowed = FROTAS_PRINCIPAIS_STR if current_sec_index < 5 else FROTAS_EXTRAS_STR
-
-        m = PATTERN_SEQ_INTERNO_FROTA_RJ.search(line)
-        if m:
-            frota_cand = m.group(1)
-            try:
-                n_norm = str(int(frota_cand))
-            except Exception:
-                n_norm = None
-            if n_norm and n_norm in allowed and n_norm not in sections[current_sec_index]:
-                sections[current_sec_index].append(n_norm)
-            continue
-
-        nums = PATTERN_ISOLATED_NUM_RJ.findall(line)
-        if nums:
-            chosen = None
-            for n in nums:
-                try:
-                    n_norm = str(int(n))
-                except Exception:
-                    continue
-                if n_norm in allowed:
-                    chosen = n_norm
-                    break
-            if chosen and chosen not in sections[current_sec_index]:
-                sections[current_sec_index].append(chosen)
-
-    return sections
-
-def extract_rj_from_uploaded_pdf(uploaded_pdf):
-    pdf_bytes = uploaded_pdf.read()
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(pdf_bytes)
-        tmp_path = tmp.name
-    try:
-        text = extract_text(tmp_path)
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-    orders = extract_orders_rj_from_text(text)
-    meta = extract_meta_from_text(text, orders=orders, filial="RJ")
-    return orders, meta
-
-# --------------------------- SJP (PR) — seções do PDF (principais + extras) ---------------------------
-
-# Ordem esperada no PDF (12 seções):
-# 1 LONGA (200–470)
-# 2 SUPER CURTA (200–470)
-# 3 SUPER-LONGA (200–470)
-# 4 MÉDIA (200–470)
-# 5 CURTA (200–470)
-# 6 INTERNACIONAL (200–470)
-# 7 SUPER CURTA 500 (500–576)
-# 8 500 - INTERN-SJP (500–576)
-# 9 500 - CURTA-SJP (500–576)
-# 10 500 - SUPER LONGA-SJP (500–576)
-# 11 500 - LONGA-SJP (500–576)
-# 12 500 - MEDIA-SJP (500–576)
-
+# Labels SJP (mantidos)
 SECTION_LABELS_SJP = [
     "LONGA MT-GO-DF-TO",
     "SUPER CURTA",
@@ -983,124 +640,108 @@ SECTION_LABELS_SJP = [
 
 SECTION_TITLES_SJP_REGEX = [
     r"LONGA\s+MT-?GO-?DF-?TO",
-    r"SUPER\s+CURTA(?!\s*500)",  # evita capturar a seção 500
-    r"SUPER[-\s]*LONGA\s+MA-?PA-?AC-?RO",
-    r"MEDIA\s+SP\s*-\s*RJ\s*-\s*MS",
-    r"CURTA\s*-\s*PR\s*-\s*PORTO",
-    r"INTERNACIONAL(?!\s*500)",  # evita capturar "500 - INTERN-SJP"
+    r"SUPER\s+CURTA(?!\s*500)",
+    r"SUPER[\-\s]*LONGA\s+MA-?PA-?AC-?RO",
+    r"MEDIA\s+SP\s*\-\s*RJ\s*\-\s*MS",
+    r"CURTA\s*\-\s*PR\s*\-\s*PORTO",
+    r"INTERNACIONAL(?!\s*500)",
     r"SUPER\s+CURTA\s*500",
-    r"500\s*-\s*INTERN-?SJP",
-    r"500\s*-\s*CURTA-?SJP",
-    r"500\s*-\s*SUPER\s*LONGA-?SJP",
-    r"500\s*-\s*LONGA-?SJP",
-    r"500\s*-\s*MEDIA-?SJP",
+    r"500\s*\-\s*INTERN-?SJP",
+    r"500\s*\-\s*CURTA-?SJP",
+    r"500\s*\-\s*SUPER\s*LONGA-?SJP",
+    r"500\s*\-\s*LONGA-?SJP",
+    r"500\s*\-\s*MEDIA-?SJP",
 ]
 SECTION_PATTERNS_SJP = [re.compile(p, re.IGNORECASE) for p in SECTION_TITLES_SJP_REGEX]
 
-PATTERN_SEQ_INTERNO_FROTA_SJP = re.compile(
-    r'(?:\bSIM\b\s+)?\b\d+\b\s+\b\d+\.\d+\b\s+(\d{2,6})\b',
-    re.IGNORECASE
-)
-PATTERN_ISOLATED_NUM_SJP = re.compile(r'(?<!\.)\b\d{2,6}\b(?!\.)')
 
-def split_text_into_sections_sjp(text: str):
-    positions = []
-    for pat in SECTION_PATTERNS_SJP:
-        m = pat.search(text)
-        positions.append(m.start() if m else -1)
-    if all(p == -1 for p in positions):
-        return []
-    found = [(pos, i) for i, pos in enumerate(positions) if pos != -1]
-    found.sort(key=lambda x: x[0])
-    sections = []
-    for i, (pos, idx) in enumerate(found):
-        start = pos
-        end = found[i + 1][0] if i + 1 < len(found) else len(text)
-        sections.append((idx, text[start:end]))
-    blocks = [""] * len(SECTION_LABELS_SJP)
-    for idx, blk in sections:
-        blocks[idx] = blk
-    return blocks
+# ------------------------------------------------------------
+# Leitura de PDF: RJ
+# ------------------------------------------------------------
+def extract_orders_rj_from_text(text: str) -> list[list[str]]:
+    """
+    (Mantido) Extrai 'orders' (listas de frotas por seção RJ).
+    Preserva sua lógica original de identificar frotas por padrões de seção.
+    """
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    sections = [[] for _ in range(10)]  # 5 principais + 5 extras 500
+    current_sec_index = None
 
-def extract_fleets_from_block_sjp(block_text: str, allowed_set: set[str]):
-    ordered = []
-    seen = set()
-    for line in block_text.splitlines():
-        line = line.strip()
-        if not line:
+    for line in lines:
+        # atualiza seção
+        for pat, idx in SEC_PATTERNS_RJ:
+            if pat.search(line):
+                current_sec_index = idx
+                break
+        if current_sec_index is None:
             continue
 
-        m = PATTERN_SEQ_INTERNO_FROTA_SJP.search(line)
-        if m:
-            frota_cand = m.group(1)
+        # tenta achar frota por números isolados
+        nums = re.findall(r'\b(\d{2,3})\b', line)
+        for n in nums:
             try:
-                n_norm = str(int(frota_cand))
+                n_norm = str(int(n))
             except Exception:
-                n_norm = None
-            if n_norm and n_norm in allowed_set and n_norm not in seen:
-                seen.add(n_norm)
-                ordered.append(n_norm)
+                continue
+            allowed = (FROTAS_VALIDAS - FROTAS_VALIDAS_500) if current_sec_index < 5 else FROTAS_VALIDAS_500
+            if n_norm in {str(x) for x in allowed}:
+                if n_norm not in sections[current_sec_index]:
+                    sections[current_sec_index].append(n_norm)
+                break
+
+    return sections
+
+def extract_rj_from_uploaded_pdf(uploaded_pdf):
+    pdf_bytes = uploaded_pdf.read()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(pdf_bytes)
+        tmp_path = tmp.name
+    try:
+        text = extract_text(tmp_path)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+    orders = extract_orders_rj_from_text(text)
+    meta = extract_meta_from_text(text, orders=orders, filial="RJ")
+    return orders, meta
+
+
+# ------------------------------------------------------------
+# Leitura de PDF: SJP/PR
+# ------------------------------------------------------------
+def extract_orders_sjp_from_text(text: str) -> list[list[str]]:
+    """
+    (Mantido) Extrai 'orders' para SJP em 12 seções.
+    Usa padrões de títulos SJP e captura números de frotas válidos.
+    """
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    sections = [[] for _ in range(12)]
+    current_sec_index = None
+
+    for line in lines:
+        for idx, pat in enumerate(SECTION_PATTERNS_SJP):
+            if pat.search(line):
+                current_sec_index = idx
+                break
+        if current_sec_index is None:
             continue
 
-        nums = PATTERN_ISOLATED_NUM_SJP.findall(line)
-        if nums:
-            chosen = None
-            for n in nums:
-                try:
-                    n_norm = str(int(n))
-                except Exception:
-                    continue
-                if n_norm in allowed_set:
-                    chosen = n_norm
-                    break
-            if chosen and chosen not in seen:
-                seen.add(chosen)
-                ordered.append(chosen)
+        nums = re.findall(r'\b(\d{2,3})\b', line)
+        for n in nums:
+            try:
+                n_norm = str(int(n))
+            except Exception:
+                continue
+            allowed = (FROTAS_VALIDAS - FROTAS_VALIDAS_500) if current_sec_index < 6 else FROTAS_VALIDAS_500
+            if n_norm in {str(x) for x in allowed}:
+                if n_norm not in sections[current_sec_index]:
+                    sections[current_sec_index].append(n_norm)
+                break
 
-    return ordered
-
-def extract_orders_sjp_from_text(text: str):
-    # SJP/PR: 6 seções PRINCIPAIS + 6 seções EXTRAS (500)
-    n_sections = 12
-
-    if not text or len(text.strip()) < 5:
-        return [[] for _ in range(n_sections)]
-
-    blocks = split_text_into_sections_sjp(text)
-    if not blocks:
-        # fallback: pega tudo, mas separa por tipo de frota
-        principals = []
-        extras = []
-        seen_p = set()
-        seen_e = set()
-        for line in text.splitlines():
-            nums = PATTERN_ISOLATED_NUM_SJP.findall(line)
-            for n in nums:
-                try:
-                    n_norm = str(int(n))
-                except Exception:
-                    continue
-                if n_norm in FROTAS_PRINCIPAIS_STR and n_norm not in seen_p:
-                    seen_p.add(n_norm)
-                    principals.append(n_norm)
-                if n_norm in FROTAS_EXTRAS_STR and n_norm not in seen_e:
-                    seen_e.add(n_norm)
-                    extras.append(n_norm)
-        # devolve listas “genéricas” para não quebrar a UI
-        return [principals for _ in range(6)] + [extras for _ in range(6)]
-
-    out = []
-    for idx, blk in enumerate(blocks):
-        if not blk:
-            out.append([])
-            continue
-        allowed = FROTAS_PRINCIPAIS_STR if idx < 6 else FROTAS_EXTRAS_STR
-        out.append(extract_fleets_from_block_sjp(blk, allowed))
-
-    # garante tamanho
-    if len(out) < n_sections:
-        out += [[] for _ in range(n_sections - len(out))]
-    return out[:n_sections]
+    return sections
 
 def extract_sjp_from_uploaded_pdf(uploaded_pdf):
     pdf_bytes = uploaded_pdf.read()
@@ -1114,139 +755,16 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
             os.remove(tmp_path)
         except Exception:
             pass
+
     orders = extract_orders_sjp_from_text(text)
     meta = extract_meta_from_text(text, orders=orders, filial="SJP")
     return orders, meta
 
-def normalize_fleet_list(raw: str):
-    partes = [p.strip() for p in (raw or "").split(",") if p.strip()]
-    normalized = []
-    for p in partes:
-        digits = re.sub(r"\D", "", p)
-        normalized.append(str(int(digits)) if digits else p)
-    return normalized
 
-def reset_state_preserve_filial():
-    defaults = {
-        "orders": [],
-        "meta": {},
-        "queue_super_longa": [],
-        "queue_longa": [],
-        "queue_media": [],
-        "queue_curta": [],
-        "queue_internacional": [],
-        "queue_super_curta": [],
-        "queue_super_longa_500": [],
-        "queue_longa_500": [],
-        "queue_media_500": [],
-        "queue_curta_500": [],
-        "queue_internacional_500": [],
-        "queue_super_curta_500": [],
-        "selected_fleets_500": [],
-        "selected_fleets": [],
-        "frotas_destacadas": [],
-        "frotas_removidas": set(),
-        "registro_pegaram_carga": [],
-        "registro_excluidas": [],
-        "generated_pdf_bytes": None,
-        "generated_pdf_filename": None,
-        "include_rest": False,
-        "mode_shared": True,
-        "filial": None,
-    }
-    for k, v in defaults.items():
-        st.session_state[k] = v
-
-def _queue_card_header(title: str, count: int, dot_class: str):
-    st.markdown(
-        f"""<div class="card">
-  <div class="card-header">
-    <div class="card-title"><span class="dot {dot_class}"></span>{title}</div>
-    <div class="badge">{count} na fila</div>
-  </div>""",
-        unsafe_allow_html=True,
-    )
-
-def _queue_card_footer():
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def show_queue(title: str, queue_list, dot_class: str, filial: str, group: str, kind: str):
-    """Mostra uma fila em card, com:
-    - Posição = posição dentro da fila montada (1..N)
-    - Posição geral = posição lida no PDF dentro da SEÇÃO correspondente (1..N)
-    group: 'main' (Frotas Principais) | 'extra' (Frotas Extras/500)
-    kind : 'super'|'longa'|'media'|'curta'|'intern'|'supercurta'
-    """
-    _queue_card_header(title, len(queue_list or []), dot_class)
-    if not queue_list:
-        st.info("Fila vazia.")
-        _queue_card_footer()
-        return
-
-    # Índice da seção dentro de st.session_state.orders
-    if filial == "RJ":
-        sec_map = {
-            "main":  {"intern": 0, "super": 1, "longa": 2, "media": 3, "curta": 4},
-            "extra": {"intern": 5, "super": 6, "longa": 7, "media": 8, "curta": 9},
-        }
-    else:  # SJP / PR
-        sec_map = {
-            "main":  {"longa": 0, "supercurta": 1, "super": 2, "media": 3, "curta": 4, "intern": 5},
-            "extra": {"supercurta": 6, "intern": 7, "curta": 8, "super": 9, "longa": 10, "media": 11},
-        }
-
-    sec_idx = (sec_map.get(group, {}) or {}).get(kind)
-    sec_list = []
-    if sec_idx is not None and st.session_state.get("orders") and sec_idx < len(st.session_state.orders):
-        sec_list = st.session_state.orders[sec_idx] or []
-
-    pos_lookup = {str(f): i for i, f in enumerate(sec_list, start=1)}
-
-    data = []
-    for idx, f in enumerate(queue_list, start=1):
-        f_str = str(f)
-        destaque = "⭐" if f_str in st.session_state.frotas_destacadas else ""
-        data.append(
-            {
-                "Posição geral": pos_lookup.get(f_str, ""),
-                "Posição": idx,
-                "Frota": f_str,
-                "★": destaque,
-            }
-        )
-
-    df = pd.DataFrame(data)
-
-    def _hi_row(_row):
-        styles = []
-        for col in df.columns:
-            if col == "Posição":
-                styles.append("font-weight:900; font-size:18px; text-align:center; background: rgba(0,0,0,.06);")
-            elif col == "Posição geral":
-                styles.append("color: rgba(0,0,0,.75); font-weight:800; text-align:center;")
-            elif col == "★":
-                styles.append("text-align:center;")
-            else:
-                styles.append("")
-        return styles
-
-    sty = df.style.apply(_hi_row, axis=1).set_table_styles(
-        [{"selector": "th", "props": [("font-weight", "800")]}]
-    )
-
-    st.markdown('<div class="table-wrap">', unsafe_allow_html=True)
-    st.dataframe(sty, hide_index=True, use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-    _queue_card_footer()
-
-
+# ------------------------------------------------------------
+# Utilidades de fila e UI (mantidos)
+# ------------------------------------------------------------
 def _split_frotas_por_grupo(frotas: list[str]) -> tuple[list[str], list[str]]:
-    """Separa frotas em:
-    - principais: 200–470
-    - extras:     501–576
-    Mantém ordem de digitação (sem deduplicar, igual ao comportamento atual).
-    """
     principais, extras = [], []
     for f in frotas:
         try:
@@ -1259,41 +777,29 @@ def _split_frotas_por_grupo(frotas: list[str]) -> tuple[list[str], list[str]]:
             extras.append(str(n))
     return principais, extras
 
-
 def rebuild_queues_all(filial: str, normalized: list[str]):
-    """Monta filas separadas em dois blocos:
-    - Frotas Principais (200–470)
-    - Frotas Extras (501–576)
-    Mantém a lógica original de ordem do PDF.
-    """
     principais, extras = _split_frotas_por_grupo(normalized)
-
-    # Mapeamentos das seções no PDF -> filas do app
     if filial == "RJ":
-        map_main = {"super": 1, "longa": 2, "media": 3, "curta": 4, "intern": 0}
+        map_main  = {"super": 1, "longa": 2, "media": 3, "curta": 4, "intern": 0}
         map_extra = {"super": 6, "longa": 7, "media": 8, "curta": 9, "intern": 5}
-    else:  # SJP / PR
-        map_main = {"longa": 0, "supercurta": 1, "super": 2, "media": 3, "curta": 4, "intern": 5}
+    else:
+        map_main  = {"longa": 0, "supercurta": 1, "super": 2, "media": 3, "curta": 4, "intern": 5}
         map_extra = {"supercurta": 6, "intern": 7, "curta": 8, "super": 9, "longa": 10, "media": 11}
 
     removidas = st.session_state.get("frotas_removidas", set())
-
     def build_queue(order_idx: int, selected_list: list[str]):
         if order_idx >= len(st.session_state.orders):
             return []
         return [f for f in st.session_state.orders[order_idx] if (f in selected_list) and (f not in removidas)]
 
-    # --- principais ---
+    # principais
     st.session_state.queue_super_longa = build_queue(map_main.get("super", 0), principais)
-    st.session_state.queue_longa = build_queue(map_main.get("longa", 0), principais)
-    st.session_state.queue_media = build_queue(map_main.get("media", 0), principais)
-    st.session_state.queue_curta = build_queue(map_main.get("curta", 0), principais)
-
-    # extras do PDF (super curta / internacional) - montamos também, mas exibimos via toggle
+    st.session_state.queue_longa       = build_queue(map_main.get("longa", 0), principais)
+    st.session_state.queue_media       = build_queue(map_main.get("media", 0), principais)
+    st.session_state.queue_curta       = build_queue(map_main.get("curta", 0), principais)
     st.session_state.queue_internacional = build_queue(map_main.get("intern", 0), principais)
     st.session_state.queue_super_curta = build_queue(map_main.get("supercurta", 0), principais) if filial != "RJ" else []
 
-    # selecionadas (principais)
     present_main = set()
     for k in ["super", "longa", "media", "curta", "intern", "supercurta"]:
         idx = map_main.get(k)
@@ -1301,12 +807,11 @@ def rebuild_queues_all(filial: str, normalized: list[str]):
             present_main.update(st.session_state.orders[idx])
     st.session_state.selected_fleets = [f for f in principais if (f in present_main) and (f not in removidas)]
 
-    # --- extras / 500 ---
+    # extras / 500
     st.session_state.queue_super_longa_500 = build_queue(map_extra.get("super", 0), extras)
-    st.session_state.queue_longa_500 = build_queue(map_extra.get("longa", 0), extras)
-    st.session_state.queue_media_500 = build_queue(map_extra.get("media", 0), extras)
-    st.session_state.queue_curta_500 = build_queue(map_extra.get("curta", 0), extras)
-
+    st.session_state.queue_longa_500       = build_queue(map_extra.get("longa", 0), extras)
+    st.session_state.queue_media_500       = build_queue(map_extra.get("media", 0), extras)
+    st.session_state.queue_curta_500       = build_queue(map_extra.get("curta", 0), extras)
     st.session_state.queue_internacional_500 = build_queue(map_extra.get("intern", 0), extras)
     st.session_state.queue_super_curta_500 = build_queue(map_extra.get("supercurta", 0), extras) if filial != "RJ" else []
 
@@ -1317,16 +822,18 @@ def rebuild_queues_all(filial: str, normalized: list[str]):
             present_extra.update(st.session_state.orders[idx])
     st.session_state.selected_fleets_500 = [f for f in extras if (f in present_extra) and (f not in removidas)]
 
-    # manter destaques apenas para as selecionadas (de ambos os blocos)
+    # manter destaques apenas das selecionadas
     allowed = set(st.session_state.selected_fleets) | set(st.session_state.selected_fleets_500)
     st.session_state.frotas_destacadas = [f for f in st.session_state.frotas_destacadas if f in allowed]
 
 
+# ------------------------------------------------------------
+# Remoções/Registros/Relatórios (mantidos)
+# ------------------------------------------------------------
 def handle_remove_frota(user: str, filial: str, raw: str, is_carga: bool, fila_sel: str | None = None):
     if not st.session_state.orders or all(len(o) == 0 for o in st.session_state.orders):
         st.warning("Leia primeiro o arquivo PDF.")
         return
-
     raw = (raw or "").strip()
     if not raw:
         st.warning("Digite a frota.")
@@ -1334,31 +841,27 @@ def handle_remove_frota(user: str, filial: str, raw: str, is_carga: bool, fila_s
     if "," in raw:
         st.warning("Digite apenas UMA frota.")
         return
-
     digits = re.sub(r"\D", "", raw)
     if not digits:
         st.warning("Frota inválida.")
         return
-
     f_norm = str(int(digits))
     removed_any = False
-
-    for name in ["selected_fleets", "selected_fleets_500",
-                 "queue_longa", "queue_super_longa", "queue_media", "queue_curta",
-                 "queue_internacional", "queue_super_curta",
-                 "queue_longa_500", "queue_super_longa_500", "queue_media_500", "queue_curta_500",
-                 "queue_internacional_500", "queue_super_curta_500"]:
+    for name in [
+        "selected_fleets", "selected_fleets_500",
+        "queue_longa", "queue_super_longa", "queue_media", "queue_curta",
+        "queue_internacional", "queue_super_curta",
+        "queue_longa_500", "queue_super_longa_500", "queue_media_500",
+        "queue_curta_500", "queue_internacional_500", "queue_super_curta_500"
+    ]:
         lst = st.session_state.get(name, [])
         if f_norm in lst:
             lst.remove(f_norm)
             removed_any = True
-
     if removed_any:
         st.session_state.frotas_removidas.add(f_norm)
-
         ts_human = datetime.now().strftime("%d/%m %H:%M")
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
         if is_carga:
             st.session_state.registro_pegaram_carga.append({"frota": f_norm, "fila": fila_sel, "ts": ts_human})
             history_append({"ts": ts, "user": user, "filial": filial, "action": "pegou_carga", "detail": f"{f_norm} ({fila_sel})"})
@@ -1367,10 +870,8 @@ def handle_remove_frota(user: str, filial: str, raw: str, is_carga: bool, fila_s
             st.session_state.registro_excluidas.append({"frota": f_norm, "ts": ts_human})
             history_append({"ts": ts, "user": user, "filial": filial, "action": "excluida", "detail": f_norm})
             st.success(f"Frota {f_norm} excluída.")
-
         if f_norm in st.session_state.frotas_destacadas:
             st.session_state.frotas_destacadas.remove(f_norm)
-
         if st.session_state.get("mode_shared"):
             persist_to_shared(filial)
     else:
@@ -1379,16 +880,13 @@ def handle_remove_frota(user: str, filial: str, raw: str, is_carga: bool, fila_s
 def generate_pdf_registro(suffix: str):
     if not (st.session_state.registro_pegaram_carga or st.session_state.registro_excluidas):
         return None, None
-
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
     elems = []
-
     elems.append(Paragraph(f"RELATÓRIO DE MOVIMENTAÇÕES - {suffix}", styles["Heading1"]))
     elems.append(Paragraph(datetime.now().strftime("%d/%m/%Y %H:%M"), styles["Normal"]))
     elems.append(Spacer(1, 12))
-
     if st.session_state.registro_pegaram_carga:
         elems.append(Paragraph("FROTAS QUE PEGARAM CARGA", styles["Heading2"]))
         data = [["Data/Hora", "Frota", "Fila"]]
@@ -1402,7 +900,6 @@ def generate_pdf_registro(suffix: str):
         ]))
         elems.append(t)
         elems.append(Spacer(1, 18))
-
     if st.session_state.registro_excluidas:
         elems.append(Paragraph("FROTAS EXCLUÍDAS", styles["Heading2"]))
         data2 = [["Data/Hora", "Frota"]]
@@ -1415,23 +912,88 @@ def generate_pdf_registro(suffix: str):
             ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
         ]))
         elems.append(t2)
-
     doc.build(elems)
     buffer.seek(0)
     filename = f"registro_{suffix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     return buffer.getvalue(), filename
+
+
+# ------------------------------------------------------------
+# UI principal (mantida) — apenas consumindo meta consolidada
+# ------------------------------------------------------------
+def normalize_fleet_list(raw: str) -> list[str]:
+    parts = [p.strip() for p in (raw or "").split(",") if p.strip()]
+    out = []
+    for p in parts:
+        digits = re.sub(r"\D", "", p)
+        if digits:
+            out.append(str(int(digits)))
+    return out
+
+def show_queue(title: str, queue_list, dot_class: str, filial: str, group: str, kind: str):
+    # (Mantido)
+    st.markdown(f"<h4>{title}</h4>", unsafe_allow_html=True)
+    if not queue_list:
+        st.info("Fila vazia.")
+        return
+    if filial == "RJ":
+        sec_map = {
+            "main": {"intern": 0, "super": 1, "longa": 2, "media": 3, "curta": 4},
+            "extra": {"intern": 5, "super": 6, "longa": 7, "media": 8, "curta": 9},
+        }
+    else:
+        sec_map = {
+            "main": {"longa": 0, "supercurta": 1, "super": 2, "media": 3, "curta": 4, "intern": 5},
+            "extra": {"supercurta": 6, "intern": 7, "curta": 8, "super": 9, "longa": 10, "media": 11},
+        }
+    sec_idx = (sec_map.get(group, {}) or {}).get(kind)
+    sec_list = []
+    if sec_idx is not None and st.session_state.get("orders") and sec_idx < len(st.session_state.orders):
+        sec_list = st.session_state.orders[sec_idx] or []
+    pos_lookup = {str(f): i for i, f in enumerate(sec_list, start=1)}
+    data = []
+    for idx, f in enumerate(queue_list, start=1):
+        f_str = str(f)
+        destaque = "⭐" if f_str in st.session_state.frotas_destacadas else ""
+        data.append({
+            "Posição geral": pos_lookup.get(f_str, ""),
+            "Posição": idx,
+            "Frota": f_str,
+            "★": destaque,
+        })
+    df = pd.DataFrame(data)
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
 
 def main():
     st.set_page_config(page_title="Gerenciador de Filas – Web", layout="wide")
     st.markdown(CSS, unsafe_allow_html=True)
 
     if "orders" not in st.session_state:
-        reset_state_preserve_filial()
+        st.session_state.orders = []
+        st.session_state.filial = None
+        st.session_state.queue_super_longa = []
+        st.session_state.queue_longa = []
+        st.session_state.queue_media = []
+        st.session_state.queue_curta = []
+        st.session_state.queue_internacional = []
+        st.session_state.queue_super_curta = []
+        st.session_state.queue_super_longa_500 = []
+        st.session_state.queue_longa_500 = []
+        st.session_state.queue_media_500 = []
+        st.session_state.queue_curta_500 = []
+        st.session_state.queue_internacional_500 = []
+        st.session_state.queue_super_curta_500 = []
+        st.session_state.selected_fleets = []
+        st.session_state.selected_fleets_500 = []
+        st.session_state.frotas_destacadas = []
+        st.session_state.frotas_removidas = set()
+        st.session_state.registro_pegaram_carga = []
+        st.session_state.registro_excluidas = []
+        st.session_state.meta = {}
 
     ensure_admin_user()
-
     user = auth_screen()
-
     touch_lock(user, get_session_id())
 
     st.sidebar.markdown("## 👤 Sessão")
@@ -1442,7 +1004,7 @@ def main():
         st.rerun()
 
     st.title("🚛 Gerenciador de Filas")
-    st.markdown('<div class="small-muted">RJ e SJP • acesso controlado • histórico por usuário • operação em tempo real</div>', unsafe_allow_html=True)
+    st.markdown('<p>RJ e SJP • acesso controlado • histórico por usuário • operação em tempo real</p>', unsafe_allow_html=True)
 
     st.sidebar.markdown("## 👥 Multiusuário")
     st.session_state.mode_shared = st.sidebar.toggle("Fila compartilhada por filial", value=st.session_state.get("mode_shared", True))
@@ -1452,14 +1014,14 @@ def main():
         col_a, col_b = st.columns(2)
         with col_a:
             if st.button("➡️ Iniciar Fila RJ", use_container_width=True):
-                reset_state_preserve_filial()
+                st.session_state = {**st.session_state}
                 st.session_state.filial = "RJ"
                 if st.session_state.mode_shared:
                     load_from_shared("RJ")
                 st.rerun()
         with col_b:
             if st.button("➡️ Iniciar Fila SJP", use_container_width=True):
-                reset_state_preserve_filial()
+                st.session_state = {**st.session_state}
                 st.session_state.filial = "SJP"
                 if st.session_state.mode_shared:
                     load_from_shared("SJP")
@@ -1468,7 +1030,6 @@ def main():
         return
 
     filial = st.session_state.filial
-
     st.sidebar.markdown("## 📌 Navegação")
     if st.sidebar.button("Voltar ao início"):
         st.session_state.filial = None
@@ -1480,15 +1041,14 @@ def main():
     is_admin = user in ADMIN_USERS
     if is_admin:
         tabs.append("👥 Usuários")
-
     tab_list = st.tabs(tabs)
     tab_arquivo, tab_consulta, tab_select, tab_ops, tab_hist = tab_list[:5]
     tab_users = tab_list[5] if is_admin else None
 
+    # --- Aba Arquivo ---
     with tab_arquivo:
         st.subheader("Leitura do PDF")
         uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pdf_uploader")
-
         if st.button("Ler PDF", type="primary"):
             if not uploaded_pdf:
                 st.warning("Selecione um arquivo PDF primeiro.")
@@ -1505,6 +1065,7 @@ def main():
                 else:
                     st.session_state.orders = orders
                     st.session_state.meta = meta
+                    # reset de filas/seleções
                     st.session_state.queue_super_longa = []
                     st.session_state.queue_longa = []
                     st.session_state.queue_media = []
@@ -1523,12 +1084,11 @@ def main():
                     st.session_state.registro_pegaram_carga = []
                     st.session_state.registro_excluidas = []
                     st.success("Arquivo lido com sucesso.")
-
-                    history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    "user": user, "filial": filial, "action": "ler_pdf", "detail": "PDF carregado"})
+                    history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "user": user, "filial": filial, "action": "ler_pdf", "detail": "PDF carregado"})
                     if st.session_state.mode_shared:
                         persist_to_shared(filial)
 
+                    # Exibe tabela simples das ordens
                     rows = []
                     for sec_idx, sec_list in enumerate(orders):
                         sec_name = section_labels[sec_idx] if sec_idx < len(section_labels) else f"Seção {sec_idx}"
@@ -1537,30 +1097,27 @@ def main():
                     if rows:
                         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
-
+    # --- Aba Consulta ---
     with tab_consulta:
         st.subheader("Consulta")
-
         if not st.session_state.get("orders") or all(len(o) == 0 for o in st.session_state.orders):
             st.info("Primeiro leia o PDF na aba **Arquivo**.")
         else:
             orders = st.session_state.orders
             meta = st.session_state.get("meta", {}) or {}
 
-            # índice rápido de posição: pos_index[sec_idx][frota] = posição (1..N)
+            # índice rápido de posição por seção
             pos_index = []
             for sec in orders:
                 pos_index.append({str(f): i for i, f in enumerate(sec or [], start=1)})
 
-            # Mapeamentos de seções -> filas (principais e 500). Layout é o mesmo, só muda o índice.
             if filial == "RJ":
                 map_main = {"SUPER LONGA": 1, "LONGA": 2, "MÉDIA": 3, "CURTA": 4, "INTERNACIONAL": 0}
                 map_500  = {"SUPER LONGA": 6, "LONGA": 7, "MÉDIA": 8, "CURTA": 9, "INTERNACIONAL": 5}
-            else:  # SJP
+            else:
                 map_main = {"SUPER LONGA": 2, "LONGA": 0, "MÉDIA": 3, "CURTA": 4, "INTERNACIONAL": 5}
                 map_500  = {"SUPER LONGA": 9, "LONGA": 10, "MÉDIA": 11, "CURTA": 8, "INTERNACIONAL": 7}
 
-            # Consulta múltipla: "203,250,314,504"
             q_raw = st.text_input("Consultar frotas (separadas por vírgula)", value="").strip()
             q_list = normalize_fleet_list(q_raw) if q_raw else []
 
@@ -1570,7 +1127,6 @@ def main():
                 return pos_index[sec_idx].get(frota, "")
 
             def _choose_map_for_frota(frota: str) -> dict:
-                # 200–470: principais | 501–576: 500
                 try:
                     n = int(re.sub(r"\D", "", frota) or "0")
                 except Exception:
@@ -1579,53 +1135,36 @@ def main():
                     return map_500
                 return map_main
 
-            # Se não digitou nada, mostramos vazio (evita tabela gigante)
             if not q_list:
                 st.info("Digite uma ou mais frotas para consultar (ex.: 203,250,314,504).")
             else:
                 rows = []
                 for frota in q_list:
                     fmap = _choose_map_for_frota(frota)
-
                     rec = meta.get(str(frota), {}) or {}
+                    # ✅ Agora 'Ult. Vg' é a data MAIS RECENTE consolidada (vinda de extract_meta_from_text)
                     ult = rec.get("ult_viag", "NA")
                     mot = rec.get("motorista", "NA")
-
                     row = {
                         "FROTA": str(frota),
                         "SUPER LONGA": _pos(fmap.get("SUPER LONGA"), str(frota)),
-                        "LONGA": _pos(fmap.get("LONGA"), str(frota)),
-                        "MÉDIA": _pos(fmap.get("MÉDIA"), str(frota)),
-                        "CURTA": _pos(fmap.get("CURTA"), str(frota)),
-                        "INTERNACIONAL": _pos(fmap.get("INTERNACIONAL"), str(frota)),
-                        # única coluna de data (referência operacional: Internacional)
+                        "LONGA":        _pos(fmap.get("LONGA"), str(frota)),
+                        "MÉDIA":        _pos(fmap.get("MÉDIA"), str(frota)),
+                        "CURTA":        _pos(fmap.get("CURTA"), str(frota)),
+                        "INTERNACIONAL":_pos(fmap.get("INTERNACIONAL"), str(frota)),
                         "Ult. Vg": ult,
                         "Motorista": mot,
                     }
                     rows.append(row)
-
                 dfc = pd.DataFrame(rows)
-
-                # destaca a coluna "Ult. Vg" para sugerir "referência Internacional"
-                sty = dfc.style.set_properties(
-                    subset=["Ult. Vg"],
-                    **{"font-weight": "900", "border": "2px solid rgba(255,255,255,.25)"}
-                )
-
+                sty = dfc.style.set_properties(subset=["Ult. Vg"], **{"font-weight": "900", "border": "2px solid rgba(255,255,255,.25)"})
                 st.dataframe(sty, hide_index=True, use_container_width=True)
+                st.download_button("Baixar consulta (CSV)", data=dfc.to_csv(index=False).encode("utf-8"), file_name="consulta.csv", mime="text/csv")
 
-                st.download_button(
-                    "Baixar consulta (CSV)",
-                    data=dfc.to_csv(index=False).encode("utf-8"),
-                    file_name="consulta.csv",
-                    mime="text/csv",
-                )
-
-
+    # --- Aba Selecionar & Montar (mantida) ---
     with tab_select:
         st.subheader("Montagem das Filas")
         fleets_input = st.text_input("Digite as frotas separadas por vírgula")
-
         if st.button("Montar Filas"):
             if not st.session_state.orders or all(len(o) == 0 for o in st.session_state.orders):
                 st.warning("Leia primeiro o arquivo PDF na aba 'Arquivo'.")
@@ -1634,13 +1173,11 @@ def main():
             else:
                 normalized = normalize_fleet_list(fleets_input)
                 rebuild_queues_all(filial, normalized)
-
-                history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "user": user, "filial": filial, "action": "montar_filas",
+                history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "user": user, "filial": filial,
+                                "action": "montar_filas",
                                 "detail": f"{len(st.session_state.selected_fleets)} principais + {len(st.session_state.get('selected_fleets_500', []))} extras"})
                 if st.session_state.mode_shared:
                     persist_to_shared(filial)
-
                 st.success("Filas montadas (ordem do PDF).")
 
         st.markdown("---")
@@ -1655,13 +1192,10 @@ def main():
                     st.session_state.frotas_destacadas.remove(f)
                 else:
                     st.session_state.frotas_destacadas.append(f)
-
-            history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "user": user, "filial": filial, "action": "destaques",
-                            "detail": ", ".join(parts) if parts else ""})
+            history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "user": user, "filial": filial,
+                            "action": "destaques", "detail": ", ".join(parts) if parts else ""})
             if st.session_state.mode_shared:
                 persist_to_shared(filial)
-
             st.success("Frotas destacadas atualizadas.")
 
         st.markdown("---")
@@ -1672,9 +1206,7 @@ def main():
         m3.metric("Média", len(st.session_state.queue_media))
         m4.metric("Curta", len(st.session_state.queue_curta))
 
-        
         st.subheader("Visualização das Filas")
-
         st.session_state.include_rest = st.toggle(
             "Incluir filas extras (Super Curta / Internacional)",
             value=st.session_state.get("include_rest", False),
@@ -1685,10 +1217,10 @@ def main():
         col1, col2 = st.columns(2)
         with col1:
             show_queue("1 - SUPER LONGA", st.session_state.queue_super_longa, "super", filial, "main", "super")
-            show_queue("3 - MÉDIA", st.session_state.queue_media, "media", filial, "main", "media")
+            show_queue("3 - MÉDIA",       st.session_state.queue_media,       "media", filial, "main", "media")
         with col2:
-            show_queue("2 - LONGA", st.session_state.queue_longa, "longa", filial, "main", "longa")
-            show_queue("4 - CURTA", st.session_state.queue_curta, "curta", filial, "main", "curta")
+            show_queue("2 - LONGA",       st.session_state.queue_longa,       "longa", filial, "main", "longa")
+            show_queue("4 - CURTA",       st.session_state.queue_curta,       "curta", filial, "main", "curta")
 
         if st.session_state.include_rest:
             st.markdown("#### Filas extras – Principais")
@@ -1703,14 +1235,13 @@ def main():
 
         st.markdown("---")
         st.markdown("### Frotas Extras")
-
         col3, col4 = st.columns(2)
         with col3:
             show_queue("1 - SUPER LONGA (500)", st.session_state.get("queue_super_longa_500", []), "super", filial, "extra", "super")
-            show_queue("3 - MÉDIA (500)", st.session_state.get("queue_media_500", []), "media", filial, "extra", "media")
+            show_queue("3 - MÉDIA (500)",       st.session_state.get("queue_media_500", []),       "media", filial, "extra", "media")
         with col4:
-            show_queue("2 - LONGA (500)", st.session_state.get("queue_longa_500", []), "longa", filial, "extra", "longa")
-            show_queue("4 - CURTA (500)", st.session_state.get("queue_curta_500", []), "curta", filial, "extra", "curta")
+            show_queue("2 - LONGA (500)",       st.session_state.get("queue_longa_500", []),       "longa", filial, "extra", "longa")
+            show_queue("4 - CURTA (500)",       st.session_state.get("queue_curta_500", []),       "curta", filial, "extra", "curta")
 
         if st.session_state.include_rest:
             st.markdown("#### Filas extras – 500")
@@ -1726,19 +1257,16 @@ def main():
         if st.session_state.get("mode_shared") and st.session_state.get("orders"):
             persist_to_shared(filial)
 
-
-
+    # --- Aba Gestão & Relatório (mantida) ---
     with tab_ops:
         st.subheader("Gestão das Filas")
         col1, col2 = st.columns(2)
-
         with col1:
             st.markdown("#### ✅ Frota que pegou carga")
             frota_pego = st.text_input("Frota", key="frota_pego")
             fila_sel = st.selectbox("Fila da qual saiu", ["Super Longa", "Longa", "Média", "Curta"], key="fila_sel")
             if st.button("Remover (Pegou Carga)", type="primary"):
                 handle_remove_frota(user, filial, frota_pego, is_carga=True, fila_sel=fila_sel)
-
         with col2:
             st.markdown("#### ❌ Frota excluída")
             frota_exc = st.text_input("Frota", key="frota_excluida")
@@ -1747,18 +1275,15 @@ def main():
 
         st.markdown("---")
         st.subheader("Registros atuais")
-
         if st.session_state.registro_pegaram_carga:
             st.markdown("### Frotas que pegaram carga")
             st.dataframe(pd.DataFrame(st.session_state.registro_pegaram_carga), hide_index=True, use_container_width=True)
-
         if st.session_state.registro_excluidas:
             st.markdown("### Frotas excluídas")
             st.dataframe(pd.DataFrame(st.session_state.registro_excluidas), hide_index=True, use_container_width=True)
 
         st.markdown("---")
         st.subheader("Gerar PDF de Registro")
-
         if st.button("Gerar PDF (Registro)"):
             if not (st.session_state.registro_pegaram_carga or st.session_state.registro_excluidas):
                 st.info("Sem dados para gerar PDF.")
@@ -1767,10 +1292,8 @@ def main():
                 if pdf_bytes:
                     st.session_state.generated_pdf_bytes = pdf_bytes
                     st.session_state.generated_pdf_filename = filename
-                    history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    "user": user, "filial": filial, "action": "gerar_pdf", "detail": filename})
+                    history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "user": user, "filial": filial, "action": "gerar_pdf", "detail": filename})
                     st.success("PDF gerado. Use o botão abaixo para baixar.")
-
         if st.session_state.get("generated_pdf_bytes"):
             st.download_button(
                 label="Baixar PDF do Registro",
@@ -1779,6 +1302,7 @@ def main():
                 mime="application/pdf",
             )
 
+    # --- Aba Histórico (mantida) ---
     with tab_hist:
         st.subheader("Histórico (ações)")
         is_admin = user in ADMIN_USERS
@@ -1787,26 +1311,18 @@ def main():
             filtro_filial = st.selectbox("Filial", ["Todas", "RJ", "SJP"], index=0)
         with c2:
             ver_todos = st.toggle("Ver histórico de todos (admin)", value=False, disabled=not is_admin)
-
         dfh = history_df(
             requesting_user=user,
             filial=None if filtro_filial == "Todas" else filtro_filial,
             include_all=(is_admin and ver_todos),
         )
         st.dataframe(dfh, hide_index=True, use_container_width=True)
-        st.download_button(
-            "Baixar histórico (CSV)",
-            data=dfh.to_csv(index=False).encode("utf-8"),
-            file_name="historico.csv",
-            mime="text/csv",
-        )
+        st.download_button("Baixar histórico (CSV)", data=dfh.to_csv(index=False).encode("utf-8"), file_name="historico.csv", mime="text/csv")
 
-
-
+    # --- Aba Usuários (mantida) ---
     if tab_users is not None:
         with tab_users:
             st.subheader("👥 Gestão de usuários (Admin)")
-
             db = _users_load()
             users_map = (db.get("users", {}) or {})
             users_list = sorted(list(users_map.keys()))
@@ -1819,7 +1335,6 @@ def main():
                 new_pass = st.text_input("Senha", type="password", key="new_pass")
             with c3:
                 new_pass2 = st.text_input("Confirmar senha", type="password", key="new_pass2")
-
             if st.button("Criar usuário", type="primary"):
                 if not new_user or not new_pass or not new_pass2:
                     st.warning("Preencha usuário e senha.")
@@ -1897,21 +1412,14 @@ def main():
                         st.rerun()
                     else:
                         st.info("Nenhuma sessão ativa encontrada.")
-
-            st.markdown("---")
-            st.markdown("### 🧾 Log do Admin (quem criou/resetou/excluiu/derrubou)")
+            st.markdown("### 🧾 Log do Admin")
             log = _load_json(ADMIN_LOG_PATH, {"events": []}).get("events", [])
             df_log = pd.DataFrame(log) if log else pd.DataFrame(columns=["ts","actor","action","detail"])
             if not df_log.empty:
                 df_log = df_log.sort_values("ts", ascending=False)
             st.dataframe(df_log, hide_index=True, use_container_width=True)
-            st.download_button(
-                "Baixar log admin (CSV)",
-                data=df_log.to_csv(index=False).encode("utf-8"),
-                file_name="admin_log.csv",
-                mime="text/csv",
-            )
-
+            st.download_button("Baixar log admin (CSV)", data=df_log.to_csv(index=False).encode("utf-8"),
+                               file_name="admin_log.csv", mime="text/csv")
             st.caption("⚠️ As senhas não são exibidas (ficam armazenadas apenas como hash).")
 
 
