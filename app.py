@@ -336,161 +336,240 @@ def auth_screen() -> str:
 
 # --------------------------- META (Motorista / Últ. Viag.) ---------------------------
 
-# Observação importante:
-# O texto extraído do PDF pelo pdfminer pode variar bastante (quebras de linha, múltiplos espaços,
-# hífens, etc.). Por isso, os REGEX abaixo são flexíveis e têm fallback para um padrão mais simples.
-
-# Padrão "completo" (quando existir UF/município/interno na mesma linha)
+# A linha do PDF (tanto RJ quanto PR/SJP) normalmente tem:
+# ... <FROTA> <DATA (dd/mm/aaaa)> <MOTORISTA...> <UF> <MUNICIPIO...> <INTERNO 999.999> ...
+# Alguns registros podem não ter DATA/UF/MUNICIPIO; nesses casos retornamos "NA".
 META_LINE_RE = re.compile(
-    r"""\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\b""",
-    re.UNICODE | re.IGNORECASE,
+    r"""\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\s+(?P<interno>\d{3}\.\d{3})\b""",
+    re.UNICODE,
 )
 
-# Padrão "simples" (muito comum): <FROTA> <DATA> <MOTORISTA...> <UF>
-META_ROW_RE_SIMPLE = re.compile(
-    r"""\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\b""",
-    re.UNICODE | re.IGNORECASE,
-)
-
-# Variante (sem data): <FROTA> <MOTORISTA...> <UF> <MUNICIPIO...>
+# Variante (sem data), quando existir UF/MUNICIPIO/INTERNO:
 META_LINE_RE_NO_DATE = re.compile(
-    r"""\b(?P<frota>\d{2,6})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\b""",
-    re.UNICODE | re.IGNORECASE,
+    r"""\b(?P<frota>\d{2,6})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\s+(?P<municipio>.+?)\s+(?P<interno>\d{3}\.\d{3})\b""",
+    re.UNICODE,
 )
 
+def _fix_glued_date(s: str) -> str:
+    """
+    Corrige casos em que a data vem "colada" no texto (ex.: ROCHA23/04/2025).
+    """
+    if not s:
+        return s
+    # Insere espaço antes da data quando ela vier imediatamente após letra
+    return re.sub(r"([A-ZÀ-Üa-zà-ü])(\d{2}/\d{2}/\d{4})", r"\1 \2", s)
 
-def extract_meta_from_text(text: str) -> dict:
-    """Extrai Motorista/Ult. Viag/UF/Município por frota a partir do texto do PDF.
 
-    Regra importante: qualquer "interno" no formato 999.999 (ou 9.999.999 etc.)
-    é IGNORADO 100% (não participa da extração).
+INTERNAL_RE = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")  # ex.: 298.691 / 300.923 / 9.999.999
+
+
+def _extract_meta_from_section_block(block_lines: list[str], frotas_in_order: list[str]) -> dict[str, dict]:
+    """
+    Extrai meta (motorista, ult_viag, uf, municipio) para uma seção específica.
+    Estratégia robusta para o PDFMiner:
+    - A coluna de frotas costuma aparecer antes (na ordem do PDF), e as colunas (motorista/data/UF/município)
+      podem vir em blocos separados.
+    - Usamos as frotas já extraídas (frotas_in_order) como "eixo" e tentamos capturar motoristas/datas
+      no mesmo tamanho/ordem.
+    - O "Interno" (999.999) é ignorado 100% (removido das linhas antes de qualquer parsing).
+    """
+    # limpa linhas
+    lines = []
+    for raw in block_lines:
+        line = (raw or "").strip()
+        if not line:
+            continue
+        line = _fix_glued_date(line)
+        # remove interno completamente
+        line = INTERNAL_RE.sub(" ", line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if line:
+            lines.append(line)
+
+    if not lines or not frotas_in_order:
+        return {}
+
+    frota_set = set(frotas_in_order)
+
+    # índices em que aparecem frotas (coluna)
+    frota_idxs = [i for i, l in enumerate(lines) if l in frota_set]
+    if not frota_idxs:
+        # fallback: se as frotas não aparecem "isoladas", não dá pra alinhar por bloco
+        return {}
+
+    last_frota_idx = max(frota_idxs)
+
+    # acha o primeiro índice de data (após a coluna de motoristas normalmente)
+    date_pat = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
+    date_idxs = [i for i in range(last_frota_idx + 1, len(lines)) if date_pat.search(lines[i]) and ":" not in lines[i]]
+    first_date_idx = date_idxs[0] if date_idxs else None
+
+    # motoristas: linhas alfabéticas entre o fim das frotas e o começo das datas
+    motorista_candidates = []
+    if first_date_idx is not None and first_date_idx > last_frota_idx:
+        mid = lines[last_frota_idx + 1:first_date_idx]
+        for l in mid:
+            # descarta UF isolado
+            if re.fullmatch(r"[A-Z]{2}", l):
+                continue
+            # descarta coisas muito curtas / cabeçalhos
+            if len(l) < 5:
+                continue
+            # descarta linhas "serviço/situação/observações" etc
+            if re.search(r"\b(SERVIÇO|SITUAÇÃO|PRES|SEQ\.?|OBSERVA|FILA|CARRETEIROS|DISPONIVEL)\b", l, re.IGNORECASE):
+                continue
+            # deve ter pelo menos 2 palavras
+            if len(l.split()) < 2:
+                continue
+            # evita pegar só números
+            if re.search(r"\d", l):
+                continue
+            motorista_candidates.append(l)
+
+    # datas: coletar após first_date_idx
+    dates = []
+    if first_date_idx is not None:
+        for i in range(first_date_idx, len(lines)):
+            l = lines[i]
+            m = date_pat.search(l)
+            if m and ":" not in l:
+                dates.append(m.group(0))
+
+    # UF e município (opcional): em muitos PDFs a UF vem separada em linhas isoladas
+    ufs = [l for l in lines if re.fullmatch(r"[A-Z]{2}", l)]
+    # município: difícil diferenciar de motorista; preferimos "NA" se não conseguirmos alinhar
+
+    # Alinha por tamanho (frotas_in_order define o N)
+    n = len(frotas_in_order)
+
+    motoristas = (motorista_candidates + ["NA"] * n)[:n]
+    dates = (dates + ["NA"] * n)[:n]
+
+    # UF: se houver pelo menos N UFs no bloco, pega as primeiras N (ordem típica)
+    ufs_aligned = (ufs + ["NA"] * n)[:n] if ufs else ["NA"] * n
+
+    meta_sec = {}
+    for i, frota in enumerate(frotas_in_order):
+        meta_sec[frota] = {
+            "motorista": motoristas[i] or "NA",
+            "ult_viag": dates[i] or "NA",
+            "uf": ufs_aligned[i] or "NA",
+            "municipio": "NA",
+        }
+    return meta_sec
+
+
+def extract_meta_from_text(text: str, orders: list[list[str]] | None = None, filial: str | None = None) -> dict:
+    """
+    Extrai Motorista e Últ. Viag. de forma robusta.
+
+    - Se `orders` for informado, tenta alinhar meta por seção usando os blocos do PDF.
+      Isso resolve o caso do PDFMiner "separar colunas" (frota num bloco, motorista em outro, datas em outro).
+    - Se `orders` não for informado, faz fallback simples (bem menos confiável).
+
+    Retorno padrão do app (compatível com o restante):
+      meta[frota] = {"motorista": <str>, "ult_viag": <dd/mm/aaaa|NA>, "uf": <UF|NA>, "municipio": <str|NA>}
     """
     meta: dict[str, dict] = {}
     if not text or len(text.strip()) < 5:
         return meta
 
-    # Remove "internos" do tipo 298.691 / 9.999.999 etc.
-    interno_re = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")
-    # Corrige casos em que a data gruda no nome (ex: ROCHA23/04/2025)
-    glued_date_re = re.compile(r"(?P<pre>[A-ZÀ-Ü])(?P<date>\d{2}/\d{2}/\d{4})", re.UNICODE)
+    # ---------- MODO ROBUSTO (por seção) ----------
+    if orders and filial:
+        lines = [l.strip() for l in text.splitlines()]
 
-    # Padrão real observado: FROTA DATA MOTORISTA UF MUNICIPIO [SEQ]
-    # (data pode faltar em alguns registros)
-    line_re = re.compile(
-        r"^\s*(?P<frota>\d{2,6})\s+"
-        r"(?:(?P<data>\d{2}/\d{2}/\d{4})\s+)?"
-        r"(?P<motorista>.+?)\s+"
-        r"(?P<uf>[A-Z]{2})\s+"
-        r"(?P<municipio>.+?)"
-        r"(?:\s+\d+)?\s*$",
-        re.UNICODE,
-    )
+        # Função para recortar blocos por cabeçalhos já existentes no app
+        def blocks_rj() -> list[list[str]]:
+            blocks = [[] for _ in range(10)]
+            cur = None
+            for l in lines:
+                ll = (l or "").strip()
+                if not ll:
+                    continue
+                for pat, idx in SEC_PATTERNS_RJ:
+                    if pat.search(ll):
+                        cur = idx
+                        break
+                if cur is None:
+                    continue
+                blocks[cur].append(ll)
+            return blocks
 
-    for raw_line in text.splitlines():
-        line = (raw_line or "").strip()
+        def blocks_sjp() -> list[str]:
+            return split_text_into_sections_sjp(text) or [""] * 12
+
+        if filial == "RJ":
+            blocks = blocks_rj()
+            for sec_idx, frotas_sec in enumerate(orders[:10]):
+                if not frotas_sec:
+                    continue
+                sec_meta = _extract_meta_from_section_block(blocks[sec_idx] if sec_idx < len(blocks) else [], [str(x) for x in frotas_sec])
+                for f, rec in sec_meta.items():
+                    # se ainda não existe, cria; se existe, pega a data MAIS RECENTE
+                    if f not in meta:
+                        meta[f] = rec
+                    else:
+                        # atualiza para data mais recente
+                        def _dt(s):
+                            try:
+                                return datetime.strptime(s, "%d/%m/%Y")
+                            except Exception:
+                                return None
+                        old = _dt(meta[f].get("ult_viag", "NA"))
+                        new = _dt(rec.get("ult_viag", "NA"))
+                        if new and (not old or new > old):
+                            meta[f] = rec
+                        # preenche motorista se estava NA
+                        if (meta[f].get("motorista") in (None, "", "NA")) and rec.get("motorista") not in (None, "", "NA"):
+                            meta[f]["motorista"] = rec["motorista"]
+            return meta
+
+        # SJP/PR
+        blocks = blocks_sjp()
+        for sec_idx, frotas_sec in enumerate(orders[:12]):
+            if not frotas_sec:
+                continue
+            blk = blocks[sec_idx] if sec_idx < len(blocks) else ""
+            sec_meta = _extract_meta_from_section_block((blk or "").splitlines(), [str(x) for x in frotas_sec])
+            for f, rec in sec_meta.items():
+                if f not in meta:
+                    meta[f] = rec
+                else:
+                    def _dt(s):
+                        try:
+                            return datetime.strptime(s, "%d/%m/%Y")
+                        except Exception:
+                            return None
+                    old = _dt(meta[f].get("ult_viag", "NA"))
+                    new = _dt(rec.get("ult_viag", "NA"))
+                    if new and (not old or new > old):
+                        meta[f] = rec
+                    if (meta[f].get("motorista") in (None, "", "NA")) and rec.get("motorista") not in (None, "", "NA"):
+                        meta[f]["motorista"] = rec["motorista"]
+        return meta
+
+    # ---------- FALLBACK SIMPLES (sem orders) ----------
+    # (mantém compatibilidade, mas pode voltar NA em PDFs com colunas separadas)
+    date_pat = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
+    for raw in text.splitlines():
+        line = _fix_glued_date((raw or "").strip())
         if not line:
             continue
-
-        # normalizações
-        line = interno_re.sub(" ", line)                 # remove interno
-        line = glued_date_re.sub(r"\g<pre> \g<date>", line)
+        # remove interno
+        line = INTERNAL_RE.sub(" ", line)
         line = re.sub(r"\s+", " ", line).strip()
 
-        m = line_re.match(line)
-        if not m:
-            continue
-
-        frota = m.group("frota") or ""
-        data = (m.group("data") or "").strip() or "NA"
-        motorista = (m.group("motorista") or "").strip()
-        uf = (m.group("uf") or "").strip()
-        municipio = (m.group("municipio") or "").strip()
-
-        # Normaliza frota
-        try:
-            frota = str(int(re.sub(r"\D", "", frota)))
-        except Exception:
-            continue
-
-        motorista = re.sub(r"\s+", " ", motorista).strip() or "NA"
-        municipio = re.sub(r"\s+", " ", municipio).strip() or "NA"
-        uf = (uf or "NA").upper()
-
-        # Preenche sem sobrescrever valores bons
-        prev = meta.get(frota, {})
-        meta[frota] = {
-            "motorista": prev.get("motorista") if prev.get("motorista") not in (None, "", "NA") else motorista,
-            "ult_viag":  prev.get("ult_viag")  if prev.get("ult_viag")  not in (None, "", "NA") else data,
-            "uf":        prev.get("uf")        if prev.get("uf")        not in (None, "", "NA") else uf,
-            "municipio": prev.get("municipio") if prev.get("municipio") not in (None, "", "NA") else municipio,
-        }
-
+        # tenta padrões simples: <frota> <data> <motorista...> <UF>
+        m = re.match(r"^(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\b", line)
+        if m:
+            frota = str(int(m.group("frota")))
+            meta.setdefault(frota, {})
+            meta[frota]["ult_viag"] = m.group("data")
+            meta[frota]["motorista"] = re.sub(r"\s+", " ", m.group("motorista")).strip()
+            meta[frota]["uf"] = m.group("uf")
+            meta[frota].setdefault("municipio", "NA")
     return meta
 
-    # Estratégia robusta (PDFMiner às vezes "cola" a data no final do nome, ex: "ROCHA23/04/2025")
-    # 1) acha linhas com "Interno" 999.999 seguido de Frota
-    # 2) no restante, procura a data dd/mm/aaaa (com ou sem espaço antes)
-    # 3) após a data, tenta UF e Município
-    interno_frota_re = re.compile(r"\b(?P<interno>\d{3}\.\d{3})\s+(?P<frota>\d{2,6})\s+(?P<rest>.+)", re.UNICODE)
-    data_re = re.compile(r"(?P<data>\d{2}/\d{2}/\d{4})")
-
-    for raw_line in text.splitlines():
-        line = (raw_line or "").strip()
-        if not line:
-            continue
-
-        m = interno_frota_re.search(line)
-        if not m:
-            continue
-
-        frota = m.group("frota")
-        rest = (m.group("rest") or "").strip()
-
-        # normaliza frota
-        try:
-            frota = str(int(re.sub(r"\D", "", frota)))
-        except Exception:
-            continue
-
-        # separa motorista / data / uf / municipio
-        motorista = "NA"
-        ult = "NA"
-        uf = "NA"
-        municipio = "NA"
-
-        md = data_re.search(rest)
-        if md:
-            ult = md.group("data")
-            before = rest[: md.start()].strip()
-            after = rest[md.end():].strip()
-            motorista = re.sub(r"\s+", " ", before).strip() or "NA"
-
-            if after:
-                toks = after.split()
-                if toks:
-                    # UF costuma ser 2 letras
-                    if re.fullmatch(r"[A-Z]{2}", toks[0]):
-                        uf = toks[0]
-                        municipio = re.sub(r"\s+", " ", " ".join(toks[1:])).strip() or "NA"
-                    else:
-                        # às vezes UF pode faltar; nesse caso tratamos o resto como município
-                        municipio = re.sub(r"\s+", " ", after).strip() or "NA"
-        else:
-            # sem data -> tudo é motorista
-            motorista = re.sub(r"\s+", " ", rest).strip() or "NA"
-
-        # guarda o primeiro registro encontrado por frota (estável)
-        if frota not in meta:
-            meta[frota] = {"motorista": motorista, "ult_viag": ult, "uf": uf, "municipio": municipio}
-
-    return meta
-
-# --------------------------- META (motorista + última viagem) POR FILA ---------------------------
-
-META_ROW_RE = re.compile(
-    r"\b(?P<frota>\d{2,6})\s+(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<motorista>.+?)\s+(?P<uf>[A-Z]{2})\b",
-    re.IGNORECASE,
-)
 
 def extract_meta_rj_by_section(text: str) -> dict:
     """Retorna: meta[frota][sec_idx] = {motorista, ult_viag}"""
@@ -785,7 +864,7 @@ def extract_rj_from_uploaded_pdf(uploaded_pdf):
         except Exception:
             pass
     orders = extract_orders_rj_from_text(text)
-    meta = extract_meta_from_text(text)
+    meta = extract_meta_from_text(text, orders=orders, filial="RJ")
     return orders, meta
 
 # --------------------------- SJP (PR) — seções do PDF (principais + extras) ---------------------------
@@ -953,7 +1032,7 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
         except Exception:
             pass
     orders = extract_orders_sjp_from_text(text)
-    meta = extract_meta_from_text(text)
+    meta = extract_meta_from_text(text, orders=orders, filial="SJP")
     return orders, meta
 
 def normalize_fleet_list(raw: str):
@@ -1322,6 +1401,7 @@ def main():
     tab_list = st.tabs(tabs)
     tab_arquivo, tab_consulta, tab_select, tab_ops, tab_hist = tab_list[:5]
     tab_users = tab_list[5] if is_admin else None
+
     with tab_arquivo:
         st.subheader("Leitura do PDF")
         uploaded_pdf = st.file_uploader("Selecione o PDF da fila", type=["pdf"], key="pdf_uploader")
@@ -1342,8 +1422,6 @@ def main():
                 else:
                     st.session_state.orders = orders
                     st.session_state.meta = meta
-
-                    # limpa filas e seleção (mantém lógica original)
                     st.session_state.queue_super_longa = []
                     st.session_state.queue_longa = []
                     st.session_state.queue_media = []
@@ -1363,18 +1441,11 @@ def main():
                     st.session_state.registro_excluidas = []
                     st.success("Arquivo lido com sucesso.")
 
-                    history_append({
-                        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "user": user,
-                        "filial": filial,
-                        "action": "ler_pdf",
-                        "detail": "PDF carregado",
-                    })
-
+                    history_append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "user": user, "filial": filial, "action": "ler_pdf", "detail": "PDF carregado"})
                     if st.session_state.mode_shared:
                         persist_to_shared(filial)
 
-                    # tabela simples de conferência (igual ao original)
                     rows = []
                     for sec_idx, sec_list in enumerate(orders):
                         sec_name = section_labels[sec_idx] if sec_idx < len(section_labels) else f"Seção {sec_idx}"
@@ -1382,6 +1453,7 @@ def main():
                             rows.append({"Seção": sec_name, "Posição": pos, "Frota": frota})
                     if rows:
                         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
 
     with tab_consulta:
         st.subheader("Consulta")
@@ -1392,102 +1464,80 @@ def main():
             orders = st.session_state.orders
             meta = st.session_state.get("meta", {}) or {}
 
-            # Índice rápido de posição: pos_index[sec_idx][frota] = posição (1..N)
+            # índice rápido de posição: pos_index[sec_idx][frota] = posição (1..N)
             pos_index = []
             for sec in orders:
                 pos_index.append({str(f): i for i, f in enumerate(sec or [], start=1)})
 
-            # Mapeamentos por filial (somente apresentação)
+            # Mapeamentos de seções -> filas (principais e 500). Layout é o mesmo, só muda o índice.
             if filial == "RJ":
                 map_main = {"SUPER LONGA": 1, "LONGA": 2, "MÉDIA": 3, "CURTA": 4, "INTERNACIONAL": 0}
                 map_500  = {"SUPER LONGA": 6, "LONGA": 7, "MÉDIA": 8, "CURTA": 9, "INTERNACIONAL": 5}
-            else:  # SJP / PR
+            else:  # SJP
                 map_main = {"SUPER LONGA": 2, "LONGA": 0, "MÉDIA": 3, "CURTA": 4, "INTERNACIONAL": 5}
                 map_500  = {"SUPER LONGA": 9, "LONGA": 10, "MÉDIA": 11, "CURTA": 8, "INTERNACIONAL": 7}
 
-            # Todas as frotas lidas no PDF (principais + 500)
-            all_frotas = []
-            seen = set()
-            for sec in orders:
-                for f in (sec or []):
-                    fs = str(f)
-                    if fs not in seen:
-                        seen.add(fs)
-                        all_frotas.append(fs)
+            # Consulta múltipla: "203,250,314,504"
+            q_raw = st.text_input("Consultar frotas (separadas por vírgula)", value="").strip()
+            q_list = normalize_fleet_list(q_raw) if q_raw else []
 
-            c1 = st.columns(1)[0]
-            with c1:
-                q_frotas = st.text_input("Consultar frotas (ex: 203,250,314,504)", value="").strip()
-
-            # Permite consultar várias frotas separadas por vírgula
-            if q_frotas:
-                parts = normalize_fleet_list(q_frotas)
-                targets = []
-                seen_t = set()
-                for p in parts:
-                    digits = re.sub(r"\D", "", str(p))
-                    if not digits:
-                        continue
-                    f = str(int(digits))
-                    if f not in seen_t:
-                        seen_t.add(f)
-                        targets.append(f)
-                if targets:
-                    all_frotas = [f for f in all_frotas if f in seen_t]
-
-            def _pos(sec_idx: int, frota: str) -> str:
+            def _pos(sec_idx: int | None, frota: str) -> str:
                 if sec_idx is None or sec_idx >= len(pos_index):
                     return ""
                 return pos_index[sec_idx].get(frota, "")
 
-            # Monta no layout: FROTA | SUPER LONGA | Ult. Vg | LONGA | Ult. Vg | ...
-            rows = []
-            for frota in all_frotas:
-                # escolhe o "mapa" certo (principais x 500) mas mostra nas MESMAS colunas
+            def _choose_map_for_frota(frota: str) -> dict:
+                # 200–470: principais | 501–576: 500
                 try:
                     n = int(re.sub(r"\D", "", frota) or "0")
                 except Exception:
                     n = 0
-                mapp = map_500 if (501 <= n <= 576) else map_main
+                if 501 <= n <= 576:
+                    return map_500
+                return map_main
 
-                rec = meta.get(str(frota), {}) or {}
-                motorista = rec.get("motorista", "NA")
-                ult = rec.get("ult_viag", "NA")
-
-                any_pos = False
-                row = {("", "FROTA"): str(frota)}
-
-                for label in ["SUPER LONGA", "LONGA", "MÉDIA", "CURTA", "INTERNACIONAL"]:
-                    sec_idx = mapp.get(label)
-                    pos = _pos(sec_idx, str(frota))
-                    if pos != "":
-                        any_pos = True
-                    row[(label, "Posição")] = pos
-                    row[(label, "Ult. Vg")] = ult
-
-                row[("", "Motorista")] = motorista
-                rows.append(row)
-
-            if rows:
-                dfc = pd.DataFrame(rows)
-                # garante ordem estável das colunas
-                cols = [("", "FROTA")]
-                for label in ["SUPER LONGA", "LONGA", "MÉDIA", "CURTA", "INTERNACIONAL"]:
-                    cols += [(label, "Posição"), (label, "Ult. Vg")]
-                cols += [("", "Motorista")]
-                dfc = dfc.reindex(columns=cols)
-                dfc.columns = pd.MultiIndex.from_tuples(dfc.columns)
+            # Se não digitou nada, mostramos vazio (evita tabela gigante)
+            if not q_list:
+                st.info("Digite uma ou mais frotas para consultar (ex.: 203,250,314,504).")
             else:
-                dfc = pd.DataFrame()
+                rows = []
+                for frota in q_list:
+                    fmap = _choose_map_for_frota(frota)
 
-            st.dataframe(dfc, hide_index=True, use_container_width=True)
-            st.download_button(
-                "Baixar consulta (CSV)",
-                data=(dfc.copy().to_csv(index=False).encode("utf-8") if not dfc.empty else b""),
-                file_name="consulta.csv",
-                mime="text/csv",
-                disabled=dfc.empty,
-            )
+                    rec = meta.get(str(frota), {}) or {}
+                    ult = rec.get("ult_viag", "NA")
+                    mot = rec.get("motorista", "NA")
+
+                    row = {
+                        "FROTA": str(frota),
+                        "SUPER LONGA": _pos(fmap.get("SUPER LONGA"), str(frota)),
+                        "LONGA": _pos(fmap.get("LONGA"), str(frota)),
+                        "MÉDIA": _pos(fmap.get("MÉDIA"), str(frota)),
+                        "CURTA": _pos(fmap.get("CURTA"), str(frota)),
+                        "INTERNACIONAL": _pos(fmap.get("INTERNACIONAL"), str(frota)),
+                        # única coluna de data (referência operacional: Internacional)
+                        "Ult. Vg": ult,
+                        "Motorista": mot,
+                    }
+                    rows.append(row)
+
+                dfc = pd.DataFrame(rows)
+
+                # destaca a coluna "Ult. Vg" para sugerir "referência Internacional"
+                sty = dfc.style.set_properties(
+                    subset=["Ult. Vg"],
+                    **{"font-weight": "900", "border": "2px solid rgba(255,255,255,.25)"}
+                )
+
+                st.dataframe(sty, hide_index=True, use_container_width=True)
+
+                st.download_button(
+                    "Baixar consulta (CSV)",
+                    data=dfc.to_csv(index=False).encode("utf-8"),
+                    file_name="consulta.csv",
+                    mime="text/csv",
+                )
+
 
     with tab_select:
         st.subheader("Montagem das Filas")
