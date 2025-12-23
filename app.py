@@ -488,14 +488,16 @@ def _extract_meta_from_section_block(block_lines: list[str], frotas_in_order: li
 
 
 
+
 def extract_meta_from_text(text: str, orders=None) -> dict:
     """
-    Extrai meta por frota (motorista + última viagem + uf + municipio) a partir do texto do pdfminer.
+    Extrai meta por frota (motorista + última viagem(data) + uf + municipio) a partir do texto extraído.
 
-    IMPORTANTE:
-      - Ignora 100% qualquer número no formato 999.999 / 9.999.999 (interno/controle).
-      - O texto do pdfminer pode vir "quebrado" (colunas em linhas separadas). Então usamos um parser
-        por "estado" + janelas de contexto, sem depender de linhas perfeitas.
+    Estratégia (robusta p/ pdfminer "quebrado"):
+      1) Pré-processa: corrige data grudada em palavra e remove 100% números no formato 999.999 (interno/controle).
+      2) Reconstrói "registros" juntando 1..4 linhas quando a linha inicia com uma FROTA válida.
+      3) Faz parse do registro por regex tolerante (com UF/Município opcional).
+      4) Para cada frota, guarda a data MAIS RECENTE encontrada (quando existir).
 
     Retorno:
       meta[frota] = {"motorista": <str|NA>, "ult_viag": <dd/mm/aaaa|NA>, "uf": <UF|NA>, "municipio": <str|NA>}
@@ -504,21 +506,57 @@ def extract_meta_from_text(text: str, orders=None) -> dict:
     if not text or len(text.strip()) < 5:
         return meta
 
-    INTERNAL_RE = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")     # ex: 308.607, 1.234.567
+    INTERNAL_RE = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")  # interno/controle (IGNORAR 100%)
     DATE_RE = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
-    UF_ONLY_RE = re.compile(r"^[A-Z]{2}$")
-    ONLY_INT_RE = re.compile(r"^\d+$")
+    UF_RE = re.compile(r"\b[A-Z]{2}\b")
 
-    STOP_WORDS = {
-        "SERVIÇO","SERVICO","PRES","SITUAÇÃO","SITUACAO","SEQ","INTERNO","FROTA","MOTORISTA","ULT.","ULT",
-        "VIAG.","VIAG","UF","MUNICIPIO","MUNICÍPIO","OBSERVAÇÕES","OBSERVACOES","TOTAL","REGISTROS",
-        "FILA","DE","CARRETEIROS","DISPONIVEL","EM","VIAGEM","SEM","MOTORISTA",
+    # Regex de registro (após limpeza do "interno")
+    META_WITH_UF = re.compile(
+        r"^\s*(?P<frota>\d{2,6})\s+"
+        r"(?:(?P<data>\d{2}/\d{2}/\d{4})\s+)?"
+        r"(?P<motorista>[A-ZÀ-Ü][A-ZÀ-Ü \.\'-]+?)\s+"
+        r"(?P<uf>[A-Z]{2})\s+"
+        r"(?P<municipio>[A-ZÀ-Ü][A-ZÀ-Ü \.\'-]+?)\s+"
+        r"(?:SIM\s+)?"
+        r"(?P<seq>\d{1,3})\s*$",
+        re.UNICODE,
+    )
+    META_NO_UF = re.compile(
+        r"^\s*(?P<frota>\d{2,6})\s+"
+        r"(?:(?P<data>\d{2}/\d{2}/\d{4})\s+)?"
+        r"(?P<motorista>[A-ZÀ-Ü][A-ZÀ-Ü \.\'-]+?)\s+"
+        r"(?:SIM\s+)?"
+        r"(?P<seq>\d{1,3})\s*$",
+        re.UNICODE,
+    )
+
+    STOP_TOKENS = {
+        "SERVIÇO","SERVICO","PRES","SITUAÇÃO","SITUACAO","SEQ","INTERNO","FROTA","MOTORISTA",
+        "ULT","ULT.","VIAG","VIAG.","UF","MUNICIPIO","MUNICÍPIO","OBSERVAÇÕES","OBSERVACOES",
+        "TOTAL","REGISTROS","FILA","DE","CARRETEIROS","DISPONIVEL","EM","VIAGEM","SEM","MOTORISTA"
     }
 
-    def _clean(s: str) -> str:
-        s = (s or "").replace("\r", "\n")
-        s = s.strip().upper()
-        # separa data grudada no nome: "ROCHA23/04/2025" -> "ROCHA 23/04/2025"
+    def _parse_date(s: str):
+        try:
+            return datetime.datetime.strptime(s, "%d/%m/%Y").date()
+        except Exception:
+            return None
+
+    def _better_date(new: str, old: str) -> bool:
+        """True se new é mais recente que old (ou old é NA)."""
+        if not new or new == "NA":
+            return False
+        if not old or old == "NA":
+            return True
+        dn = _parse_date(new)
+        do = _parse_date(old)
+        if not dn or not do:
+            return False
+        return dn > do
+
+    def _prep_line(line: str) -> str:
+        s = (line or "").strip().upper()
+        # data grudada: ROCHA23/04/2025 -> ROCHA 23/04/2025
         s = re.sub(r"([A-ZÀ-Ü])(\d{2}/\d{2}/\d{4})", r"\1 \2", s)
         # remove interno/controle 100%
         s = INTERNAL_RE.sub(" ", s)
@@ -526,217 +564,97 @@ def extract_meta_from_text(text: str, orders=None) -> dict:
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
-    def _is_driver_line(s: str) -> bool:
-        # heurística: 2+ palavras, mais letras do que números, e não é cabeçalho
-        if not s or len(s) < 6:
-            return False
-        parts = s.split()
-        if len(parts) < 2:
-            return False
-        # evita cabeçalhos/ruídos
-        up = set(parts)
-        if len(up & STOP_WORDS) >= 2:
-            return False
-        if "TOTAL" in up or "REGISTROS" in up:
-            return False
-        # pouca ou nenhuma ocorrência de dígito
-        digit_count = sum(ch.isdigit() for ch in s)
-        if digit_count > 0:
-            return False
-        # deve ter letras
-        alpha_count = sum(ch.isalpha() for ch in s)
-        if alpha_count < 6:
-            return False
-        return True
+    # ---------- reconstrução de registros ----------
+    lines = [_prep_line(l) for l in text.splitlines()]
+    lines = [l for l in lines if l]  # remove vazias
 
-    def _parse_date(s: str):
-        m = DATE_RE.search(s)
+    # Usa set global de frotas se existir; senão tenta inferir pelo orders
+    allowed = set()
+    try:
+        allowed = set(FROTAS_TODAS_STR)
+    except Exception:
+        pass
+    if not allowed and orders:
+        try:
+            for sec in orders:
+                for f in (sec or []):
+                    allowed.add(str(int(re.sub(r"\D","",str(f)) or "0")))
+        except Exception:
+            allowed = set()
+
+    def _starts_with_valid_frota(s: str) -> str | None:
+        m = re.match(r"^(\d{2,6})\b", s)
         if not m:
             return None
-        try:
-            return datetime.strptime(m.group(0), "%d/%m/%Y")
-        except Exception:
+        f = str(int(m.group(1)))
+        if allowed and f not in allowed:
             return None
+        return f
 
-    def _best_update(frota: str, motorista: str | None, dt: datetime | None, uf: str | None, municipio: str | None):
-        rec = meta.get(frota, {"motorista":"NA","ult_viag":"NA","uf":"NA","municipio":"NA"})
-        old_dt = None
-        if rec.get("ult_viag") and rec["ult_viag"] != "NA":
-            try:
-                old_dt = datetime.strptime(rec["ult_viag"], "%d/%m/%Y")
-            except Exception:
-                old_dt = None
-
-        # Decide se atualiza: data mais recente ganha.
-        if dt is not None and (old_dt is None or dt > old_dt):
-            rec["ult_viag"] = dt.strftime("%d/%m/%Y")
-            if motorista:
-                rec["motorista"] = motorista
-            if uf:
-                rec["uf"] = uf
-            if municipio:
-                rec["municipio"] = municipio
-            meta[frota] = rec
-            return
-
-        # Se ainda não tem motorista, preenche mesmo sem data
-        if (rec.get("motorista","NA") == "NA") and motorista:
-            rec["motorista"] = motorista
-            if uf and rec.get("uf","NA") == "NA":
-                rec["uf"] = uf
-            if municipio and rec.get("municipio","NA") == "NA":
-                rec["municipio"] = municipio
-            meta[frota] = rec
-
-        # Se não tem data e agora temos
-        if rec.get("ult_viag","NA") == "NA" and dt is not None:
-            rec["ult_viag"] = dt.strftime("%d/%m/%Y")
-            if uf and rec.get("uf","NA") == "NA":
-                rec["uf"] = uf
-            if municipio and rec.get("municipio","NA") == "NA":
-                rec["municipio"] = municipio
-            meta[frota] = rec
-
-    # --- Parser por estado ---
-    lines = [l for l in (text or "").splitlines()]
-    cleaned_lines = []
-    for l in lines:
-        c = _clean(l)
-        if c:
-            cleaned_lines.append(c)
-
-    last_driver = None
-    last_date = None
-    last_uf = None
-    last_municipio = None
-
-    def _extract_frotas_in_line(s: str) -> list[str]:
-        # pega todos os inteiros da linha e filtra por frotas válidas
-        nums = re.findall(r"\b\d{2,6}\b", s)
-        out = []
-        for n in nums:
-            try:
-                nn = str(int(n))
-            except Exception:
-                continue
-            if nn in FROTAS_TODAS_STR:
-                out.append(nn)
-        return out
-
-    def _parse_inline_meta(s: str, frota: str):
-        # tenta extrair data e motorista da mesma linha quando vier "frota data motorista ..."
-        dt = _parse_date(s)
-        # remove frota e data para tentar isolar motorista
-        tmp = re.sub(rf"\b{re.escape(frota)}\b", " ", s)
-        tmp = DATE_RE.sub(" ", tmp)
-        tmp = re.sub(r"\bSIM\b", " ", tmp)
-        tmp = re.sub(r"\b(?:DISPONIVEL|EM VIAGEM)\b", " ", tmp)
-        # remove seq no fim
-        tmp = re.sub(r"\b\d{1,3}\b$", " ", tmp).strip()
-        tmp = re.sub(r"\s+", " ", tmp).strip()
-
-        uf = None
-        municipio = None
-        # se tiver UF na string, corta motorista até antes dela
-        m_uf = re.search(r"\b([A-Z]{2})\b", tmp)
-        motorista = None
-        if m_uf:
-            uf = m_uf.group(1)
-            before = tmp[:m_uf.start()].strip()
-            after = tmp[m_uf.end():].strip()
-            if before and _is_driver_line(before):
-                motorista = before
-            if after:
-                municipio = after
-        else:
-            if tmp and _is_driver_line(tmp):
-                motorista = tmp
-
-        return motorista, dt, uf, municipio
-
-    for i, s in enumerate(cleaned_lines):
-        # Captura data/uf/municipio/driver em estado
-        dt = _parse_date(s)
-        if dt is not None:
-            last_date = dt
+    i = 0
+    while i < len(lines):
+        f0 = _starts_with_valid_frota(lines[i])
+        if not f0:
+            i += 1
             continue
 
-        if UF_ONLY_RE.match(s):
-            last_uf = s
-            continue
+        # junta até 4 linhas para tentar fechar o registro (seq no final)
+        buf = [lines[i]]
+        j = i + 1
+        while j < len(lines) and len(buf) < 4:
+            # se a próxima linha também começa com frota válida, para (novo registro)
+            if _starts_with_valid_frota(lines[j]):
+                break
+            buf.append(lines[j])
+            # heurística: se terminar com número (seq), provável fim do registro
+            if re.search(r"\b\d{1,3}\s*$", buf[-1]):
+                break
+            j += 1
 
-        # municipio: linha alfabética com 1-4 palavras logo após UF
-        if last_uf and (not any(ch.isdigit() for ch in s)) and len(s.split()) <= 5 and len(s) >= 3 and not _is_driver_line(s):
-            # evita capturar cabeçalho
-            if s not in STOP_WORDS:
-                last_municipio = s
-            continue
+        rec = " ".join(buf)
+        rec = re.sub(r"\s+", " ", rec).strip()
 
-        if _is_driver_line(s):
-            last_driver = s
-            # reseta UF/município quando novo motorista aparece (evita "vazar")
-            last_uf = None
-            last_municipio = None
-            continue
+        # tenta parse
+        m = META_WITH_UF.match(rec) or META_NO_UF.match(rec)
+        if m:
+            frota = str(int(m.group("frota")))
+            motorista = re.sub(r"\s+", " ", (m.group("motorista") or "").strip())
+            data = (m.groupdict().get("data") or "NA").strip()
+            uf = (m.groupdict().get("uf") or "NA").strip()
+            municipio = re.sub(r"\s+", " ", (m.groupdict().get("municipio") or "").strip()) if m.groupdict().get("municipio") else "NA"
 
-        # Se chegou aqui, tenta ver se a linha tem frota (às vezes vem junto com outros tokens)
-        frotas_in_line = _extract_frotas_in_line(s)
-        if not frotas_in_line:
-            continue
+            # limpeza básica de motorista (remove tokens lixo no fim/início)
+            toks = [t for t in motorista.split() if t and t not in STOP_TOKENS]
+            motorista = " ".join(toks).strip()
+            if not motorista:
+                motorista = "NA"
 
-        # Para cada frota encontrada, tenta parse inline; se falhar usa estado + lookahead
-        for frota in frotas_in_line:
-            motorista, dtx, uf, municipio = _parse_inline_meta(s, frota)
+            prev = meta.get(frota)
+            if not prev:
+                meta[frota] = {"motorista": motorista, "ult_viag": data or "NA", "uf": uf or "NA", "municipio": municipio or "NA"}
+            else:
+                # Atualiza motorista se estava NA
+                if prev.get("motorista", "NA") == "NA" and motorista != "NA":
+                    prev["motorista"] = motorista
+                # Atualiza UF/Município se estiverem NA
+                if prev.get("uf", "NA") == "NA" and uf != "NA":
+                    prev["uf"] = uf
+                if prev.get("municipio", "NA") == "NA" and municipio != "NA":
+                    prev["municipio"] = municipio
+                # Mantém data mais recente
+                if _better_date(data, prev.get("ult_viag", "NA")):
+                    prev["ult_viag"] = data
+                    if motorista != "NA":
+                        prev["motorista"] = motorista
+                    if uf != "NA":
+                        prev["uf"] = uf
+                    if municipio != "NA":
+                        prev["municipio"] = municipio
+                meta[frota] = prev
 
-            # fallback: procura motorista/data numa janela ao redor
-            if motorista is None or dtx is None:
-                # janela pequena (pdfminer quebra linhas)
-                win = cleaned_lines[max(0, i-3): min(len(cleaned_lines), i+6)]
-                if dtx is None:
-                    for w in win:
-                        dd = _parse_date(w)
-                        if dd is not None:
-                            dtx = dd
-                            break
-                if motorista is None:
-                    # primeiro driver line na janela
-                    for w in win:
-                        if _is_driver_line(w):
-                            motorista = w
-                            break
-
-            # fallback final: estado acumulado
-            if dtx is None:
-                dtx = last_date
-            if motorista is None:
-                motorista = last_driver
-            if uf is None:
-                uf = last_uf
-            if municipio is None:
-                municipio = last_municipio
-
-            _best_update(
-                frota=frota,
-                motorista=motorista if motorista else None,
-                dt=dtx,
-                uf=uf if uf else None,
-                municipio=municipio if municipio else None,
-            )
-
-    # normaliza NA
-    for k, v in list(meta.items()):
-        if not v.get("motorista"):
-            v["motorista"] = "NA"
-        if not v.get("ult_viag"):
-            v["ult_viag"] = "NA"
-        if not v.get("uf"):
-            v["uf"] = "NA"
-        if not v.get("municipio"):
-            v["municipio"] = "NA"
-        meta[k] = v
+        i = j if j > i else i + 1
 
     return meta
-
 
 
 def history_append(event: dict):
