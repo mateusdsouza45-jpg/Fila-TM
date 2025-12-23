@@ -488,15 +488,14 @@ def _extract_meta_from_section_block(block_lines: list[str], frotas_in_order: li
 
 
 def extract_meta_from_text(text: str, orders=None) -> dict:
-    """Extrai meta (motorista + data mais recente) por frota a partir do texto do pdfminer.
+    """
+    Extrai meta (motorista + última viagem) por frota a partir do texto extraído do PDF.
 
-    Objetivo: ser robusto ao PDF miner "quebrando" colunas/linhas e NÃO depender de libs extras.
-
-    Regras (conforme solicitado):
-    - Ignorar 100% qualquer número no formato 999.999 / 9.999.999 etc. (controle/interno com ponto).
+    Regras:
+    - Ignorar 100% qualquer número no formato 999.999 / 9.999.999 etc. (interno/controle com ponto).
       Esses números NÃO entram na extração (servem apenas como delimitadores).
-    - A data (dd/mm/aaaa), quando existir, é a referência de "Últ. Viag.".
-    - Para cada frota: mantém a DATA MAIS RECENTE encontrada no PDF. O motorista associado a essa data tem prioridade.
+    - A data (dd/mm/aaaa), quando existir na linha, é usada como "Ult. Viag.".
+    - Para cada frota: manter a DATA MAIS RECENTE encontrada no PDF. O motorista associado a essa data tem prioridade.
       Se só existir registro sem data para a frota, preenche motorista e deixa data = 'NA'.
 
     Retorno:
@@ -505,25 +504,34 @@ def extract_meta_from_text(text: str, orders=None) -> dict:
     if not text or len(text.strip()) < 5:
         return {}
 
-    # --- utilidades (baseadas no seu script Fila.py) ---
-    UF_REGEX = r"^[A-Z]{2}$"
-    DATE_REGEX = r"^\d{2}/\d{2}/\d{4}$"
-    ID_REGEX = r"^\d{1,3}(?:\.\d{3})+$"  # 298.691 / 1.234.567 etc (IGNORAR)
-    SIM_TOKENS = {"SIM"}
-    SITUACAO_TOKENS = {"EM", "VIAGEM", "DISPONIVEL", "DISPONÍVEL", "DISPONIVEL", "DISPONÍVEL"}
-    UF_EXTRA = {"AR","UR","BO","RR","AM","PA","AC","RO","AP","MA","MS","MT","DF","GO","TO","SP","RJ","PR"}
+    # allowed frotas: se 'orders' foi passado, usa as frotas que aparecem nele.
+    allowed = None
+    if orders:
+        try:
+            allowed = {str(int(f)) for sec in (orders or []) for f in (sec or [])}
+        except Exception:
+            allowed = None
+
+    # fallback: usa o set global de frotas válidas do app, se existir
+    try:
+        if allowed is None and 'FROTAS_TODAS_STR' in globals():
+            allowed = set(FROTAS_TODAS_STR)
+    except Exception:
+        pass
+
+    ID_REMOVE_RE = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")  # interno/controle com ponto (ex.: 300.923) -> remover
+    DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+    UF_RE = re.compile(r"^[A-Z]{2}$")
 
     def clean_spaces(s: str) -> str:
         return re.sub(r"\s+", " ", (s or "")).strip()
 
     def is_date(tok: str) -> bool:
-        return bool(re.match(DATE_REGEX, tok))
+        return bool(DATE_RE.match(tok or ""))
 
     def is_uf(tok: str) -> bool:
-        return bool(re.match(UF_REGEX, tok)) or tok in UF_EXTRA
-
-    def is_id(tok: str) -> bool:
-        return bool(re.match(ID_REGEX, tok))
+        # UF pode aparecer como 2 letras
+        return bool(UF_RE.match(tok or ""))
 
     def parse_ddmmyyyy(s: str):
         try:
@@ -533,125 +541,98 @@ def extract_meta_from_text(text: str, orders=None) -> dict:
 
     # Corrige casos do tipo "ROCHA23/04/2025" (data grudada)
     def normalize_glued_dates(s: str) -> str:
-        return re.sub(r"([A-ZÀ-Ü])(?=(\d{2}/\d{2}/\d{4}))", r"\1 ", s)
-
-    # Remove 100% os IDs com ponto (controle/interno)
-    ID_REMOVE_RE = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")
-
-    # --- reconstrução de linhas (pdfminer às vezes quebra motorista/município em linhas) ---
-    raw_lines = [clean_spaces(l) for l in text.splitlines() if clean_spaces(l)]
-    i = 0
-    merged_lines = []
-    while i < len(raw_lines):
-        line = raw_lines[i]
-        # une com próximas linhas se:
-        # - a linha começa com frota (2-6 dígitos)
-        # - e NÃO termina com seq numérico (1-4 dígitos)
-        # - e a próxima linha NÃO começa com frota (para não colar registros diferentes)
-        if re.match(r"^\d{2,6}\b", line) and not re.search(r"\b\d{1,4}\s*$", line):
-            buff = [line]
-            j = i + 1
-            # une até 2 linhas extras no máximo (suficiente p/ nomes quebrados)
-            while j < len(raw_lines) and len(buff) < 3 and not re.match(r"^\d{2,6}\b", raw_lines[j]):
-                buff.append(raw_lines[j])
-                j += 1
-            merged_lines.append(clean_spaces(" ".join(buff)))
-            i = j
-        else:
-            merged_lines.append(line)
-            i += 1
+        return re.sub(r"([A-ZÀ-Ü])(?=(\d{2}/\d{2}/\d{4}))", r"\1 ", s or "")
 
     meta: dict[str, dict] = {}
 
-    for raw in merged_lines:
-        line = normalize_glued_dates(raw.upper())
-        # remove IDs com ponto (controle/interno) 100%
+    for raw_line in text.splitlines():
+        line = clean_spaces(raw_line)
+        if not line:
+            continue
+
+        line = normalize_glued_dates(line)
+        # remove os internos/controles (com ponto) completamente
         line = ID_REMOVE_RE.sub(" ", line)
         line = clean_spaces(line)
-
         if not line:
             continue
 
         tokens = line.split()
-        if not tokens:
+        if len(tokens) < 2:
             continue
 
-        # precisa começar com frota (2-6 dígitos)
-        if not re.match(r"^\d{2,6}$", tokens[0]):
-            continue
-
-        frota = str(int(tokens[0]))
-        # Se orders foi passado, opcionalmente filtra para frotas que existem no PDF da fila
-        if orders is not None:
+        # encontra a primeira frota válida na linha
+        frota_idx = None
+        frota = None
+        for i, t in enumerate(tokens):
+            if not re.match(r"^\d{2,6}$", t):
+                continue
+            # normaliza e valida
             try:
-                # cria um set rápido uma vez (cache simples em atributo da função)
-                if not hasattr(extract_meta_from_text, "_orders_set_cache") or extract_meta_from_text._orders_set_cache_src is not orders:
-                    s = set()
-                    for sec in orders:
-                        for f in (sec or []):
-                            s.add(str(int(str(f))))
-                    extract_meta_from_text._orders_set_cache = s
-                    extract_meta_from_text._orders_set_cache_src = orders
-                if frota not in extract_meta_from_text._orders_set_cache:
-                    # pula ruído/linhas que por acaso começam com número
-                    continue
+                f = str(int(t))
             except Exception:
-                pass
+                continue
+            if allowed is not None:
+                if f in allowed:
+                    frota_idx, frota = i, f
+                    break
+            else:
+                # fallback: aceita qualquer 2-6 dígitos (o app filtra depois pelo set de frotas válidas)
+                frota_idx, frota = i, f
+                break
 
-        idx = 1
+        if frota_idx is None or frota is None:
+            continue
 
+        idx = frota_idx + 1
+
+        # data pode vir logo após a frota
         data = "NA"
         if idx < len(tokens) and is_date(tokens[idx]):
             data = tokens[idx]
             idx += 1
 
-        # motorista: até encontrar UF / seq final / SIM / situação
+        # motorista: até UF ou fim
         motorista_tokens = []
         while idx < len(tokens):
             t = tokens[idx]
             # delimitadores
-            if is_uf(t) or t in SIM_TOKENS:
+            if is_uf(t):
                 break
             if is_date(t):
                 break
-            # não parar no número de seq aqui; vamos tratar mais abaixo
-            if re.match(r"^\d{1,4}$", t):
-                # se isso for o último token, é seq; então para
-                if idx == len(tokens) - 1:
-                    break
-            # situação inline pode aparecer como 2 tokens "EM" "VIAGEM"
-            if t in SITUACAO_TOKENS:
+            if t.upper() == "SIM":
                 break
-
+            # seq costuma ser o último número "solto" no fim da linha
+            if re.match(r"^\d{1,4}$", t) and idx >= len(tokens) - 1:
+                break
             motorista_tokens.append(t)
             idx += 1
 
-        motorista = clean_spaces(" ".join(motorista_tokens)) or "NA"
-
-        uf = "NA"
-        municipio = "NA"
+        motorista = clean_spaces(" ".join(motorista_tokens)) if motorista_tokens else "NA"
 
         # UF + município (quando existir)
+        uf = "NA"
+        municipio = "NA"
         if idx < len(tokens) and is_uf(tokens[idx]):
             uf = tokens[idx]
             idx += 1
-            mun_tokens = []
+            municipio_tokens = []
             while idx < len(tokens):
                 t = tokens[idx]
-                # seq normalmente no final
-                if re.match(r"^\d{1,4}$", t) and idx == len(tokens) - 1:
+                if t.upper() == "SIM":
                     break
-                if t in SIM_TOKENS:
+                if is_date(t) or is_uf(t):
                     break
-                if t in SITUACAO_TOKENS:
+                if re.match(r"^\d{1,4}$", t) and idx >= len(tokens) - 1:
                     break
-                mun_tokens.append(t)
+                municipio_tokens.append(t)
                 idx += 1
-            municipio = clean_spaces(" ".join(mun_tokens)) or "NA"
+            if municipio_tokens:
+                municipio = clean_spaces(" ".join(municipio_tokens))
 
-        # Atualiza meta (mantendo data mais recente)
+        # --- escolhe a meta mais recente por frota ---
         new_dt = parse_ddmmyyyy(data) if data != "NA" else None
-
         if frota not in meta:
             meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
             continue
@@ -672,6 +653,7 @@ def extract_meta_from_text(text: str, orders=None) -> dict:
                 meta[frota]["municipio"] = municipio
 
     return meta
+
 
 def history_append(event: dict):
     """Salva histórico por usuário (privado)."""
