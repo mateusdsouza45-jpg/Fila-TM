@@ -9,7 +9,8 @@ from io import BytesIO
 
 import streamlit as st
 import pandas as pd
-from pdfminer.high_level import extract_text
+from pdfminer.high_level import extract_text, extract_pages
+from pdfminer.layout import LTTextContainer, LTTextLine
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -656,6 +657,143 @@ def extract_meta_from_text(text: str, orders=None) -> dict:
 
     return meta
 
+def extract_meta_from_pdf_layout(pdf_path: str, orders=None) -> dict:
+    """Extrai Motorista / Ult. Viag (DATA) por frota usando coordenadas do pdfminer.
+
+    O extract_text() no seu PDF vem "quebrado em colunas". Aqui reconstruímos as linhas por coordenada Y,
+    ordenando os pedaços por X. Isso permite recuperar registros como:
+      <FROTA> <DATA> <MOTORISTA...> <UF> <MUNICIPIO...> <SEQ>
+    mesmo quando o texto extraído padrão não preserva as linhas.
+
+    Regras:
+    - Ignora 100% qualquer número no formato 999.999 / 9.999.999 (interno/controle).
+    - Considera apenas frotas válidas (FROTAS_TODAS_STR).
+    - Se a frota aparecer várias vezes, mantém a DATA mais recente (quando existir).
+    """
+    meta: dict[str, dict] = {}
+    INTERNAL_RE = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")
+    DATE_RE = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
+    UF_RE = re.compile(r"\b[A-Z]{2}\b")
+
+    allowed_from_orders = set()
+    if orders:
+        for sec in orders:
+            for f in (sec or []):
+                allowed_from_orders.add(str(f))
+
+    def is_valid_frota(tok: str) -> str | None:
+        if not tok.isdigit():
+            return None
+        try:
+            n = str(int(tok))
+        except Exception:
+            return None
+        if n in FROTAS_TODAS_STR and (not allowed_from_orders or n in allowed_from_orders):
+            return n
+        return None
+
+    def newer_date(a: str, b: str) -> bool:
+        try:
+            da = datetime.strptime(a, "%d/%m/%Y")
+            db = datetime.strptime(b, "%d/%m/%Y")
+            return da > db
+        except Exception:
+            return False
+
+    def parse_row(row_text: str):
+        s = (row_text or "").strip().upper()
+        if not s:
+            return None
+        s = INTERNAL_RE.sub(" ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        if not s:
+            return None
+
+        toks = s.split()
+        frota = None
+        for t in toks:
+            frota = is_valid_frota(t)
+            if frota:
+                break
+        if not frota:
+            return None
+
+        i_frota = toks.index(frota)
+
+        i_date = None
+        for i,t in enumerate(toks):
+            if DATE_RE.fullmatch(t):
+                i_date = i
+                break
+
+        i_uf = None
+        for i,t in enumerate(toks):
+            if UF_RE.fullmatch(t) and t not in {"RJ","PR"}:
+                i_uf = i
+                break
+
+        # motorista
+        motorista_tokens = []
+        if i_date is not None and i_uf is not None and i_uf > i_date:
+            motorista_tokens = toks[i_date+1:i_uf]
+        elif i_date is not None and i_date > i_frota:
+            motorista_tokens = toks[i_frota+1:i_date]
+        else:
+            motorista_tokens = toks[i_frota+1:]
+
+        if motorista_tokens and motorista_tokens[-1].isdigit() and len(motorista_tokens[-1]) <= 3:
+            motorista_tokens = motorista_tokens[:-1]
+
+        motorista = " ".join([t for t in motorista_tokens if t not in STOP_TOKENS]).strip() or "NA"
+        data = toks[i_date] if i_date is not None else "NA"
+        uf = toks[i_uf] if i_uf is not None else "NA"
+
+        municipio = "NA"
+        if i_uf is not None and i_uf+1 < len(toks):
+            muni_tokens = toks[i_uf+1:]
+            if muni_tokens and muni_tokens[-1].isdigit() and len(muni_tokens[-1]) <= 3:
+                muni_tokens = muni_tokens[:-1]
+            municipio = " ".join([t for t in muni_tokens if t not in STOP_TOKENS]).strip() or "NA"
+
+        return frota, motorista, data, uf, municipio
+
+    for page_layout in extract_pages(pdf_path):
+        rows = {}
+        for element in page_layout:
+            if isinstance(element, LTTextContainer):
+                for line in element:
+                    if isinstance(line, LTTextLine):
+                        txt = (line.get_text() or "").strip()
+                        if not txt:
+                            continue
+                        ykey = round(line.y0 / 2)  # buckets p/ agrupar
+                        rows.setdefault(ykey, []).append((line.x0, txt))
+
+        for ykey in sorted(rows.keys(), reverse=True):
+            parts = [t for _, t in sorted(rows[ykey], key=lambda x: x[0])]
+            row_text = " ".join(parts)
+            parsed = parse_row(row_text)
+            if not parsed:
+                continue
+            frota, motorista, data, uf, municipio = parsed
+
+            prev = meta.get(frota)
+            if not prev:
+                meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
+            else:
+                if data != "NA" and (prev.get("ult_viag") in (None, "NA") or newer_date(data, prev.get("ult_viag", "NA"))):
+                    meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
+                else:
+                    if prev.get("motorista") in (None, "NA") and motorista != "NA":
+                        prev["motorista"] = motorista
+                    if prev.get("uf") in (None, "NA") and uf != "NA":
+                        prev["uf"] = uf
+                    if prev.get("municipio") in (None, "NA") and municipio != "NA":
+                        prev["municipio"] = municipio
+                    meta[frota] = prev
+
+    return meta
+
 
 def history_append(event: dict):
     """Salva histórico por usuário (privado)."""
@@ -887,8 +1025,8 @@ def extract_rj_from_uploaded_pdf(uploaded_pdf):
         text_orders = extract_text(tmp_path)
         orders = extract_orders_rj_from_text(text_orders)
         # META: extração compatível com Streamlit Cloud (pdfminer + regex robusto)
-        meta = extract_meta_from_text(text_orders, orders=orders)
-        return orders, meta, text_orders, text_orders
+        meta = extract_meta_from_pdf_layout(tmp_path, orders=orders)
+        return orders, meta, text_orders
     finally:
         try:
             os.remove(tmp_path)
@@ -1057,7 +1195,7 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
         text_orders = extract_text(tmp_path)
         orders = extract_orders_sjp_from_text(text_orders)
         # META: extração compatível com Streamlit Cloud (pdfminer + regex robusto)
-        meta = extract_meta_from_text(text_orders, orders=orders)
+        meta = extract_meta_from_pdf_layout(tmp_path, orders=orders)
         return orders, meta, text_orders
     finally:
         try:
