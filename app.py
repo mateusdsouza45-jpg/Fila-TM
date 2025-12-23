@@ -1501,89 +1501,100 @@ def main():
                         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
-    with tab_consulta:
-        st.subheader("Consulta (posições por fila)")
+        with tab_consulta:
+            st.subheader("Consulta (posições por fila)")
 
-        if not st.session_state.get("orders") or all(len(o) == 0 for o in st.session_state.orders):
-            st.info("Primeiro leia o PDF na aba **Arquivo**.")
-        else:
-            filial = st.session_state.filial
-            orders = st.session_state.orders
+            if not st.session_state.get("orders") or all(len(o) == 0 for o in st.session_state.orders):
+                st.info("Primeiro leia o PDF na aba **Arquivo**.")
+            else:
+                filial = st.session_state.filial
+                orders = st.session_state.orders
+                meta = st.session_state.get("meta", {}) or {}
 
-            # Layout único (mesmas colunas para 200–470 e 500–576)
-            base_cols = ["FROTA", "SUPER LONGA", "LONGA", "MÉDIA", "CURTA", "INTERNACIONAL"]
+                # Layout único (mesmas colunas para 200–470 e 500–576)
+                base_cols = ["FROTA", "SUPER LONGA", "LONGA", "MÉDIA", "CURTA", "INTERNACIONAL", "ULT. VG", "MOTORISTA"]
 
-            # Mapeamento das seções -> colunas (RJ e SJP têm índices diferentes)
-            if filial == "RJ":
-                map_main = {"SUPER LONGA": 1, "LONGA": 2, "MÉDIA": 3, "CURTA": 4, "INTERNACIONAL": 0}
-                map_500  = {"SUPER LONGA": 6, "LONGA": 7, "MÉDIA": 8, "CURTA": 9, "INTERNACIONAL": 5}
-            else:  # SJP / PR
-                map_main = {"SUPER LONGA": 2, "LONGA": 0, "MÉDIA": 3, "CURTA": 4, "INTERNACIONAL": 5}
-                map_500  = {"SUPER LONGA": 9, "LONGA": 10, "MÉDIA": 11, "CURTA": 8, "INTERNACIONAL": 7}
+                # Mapeamento das seções -> colunas (RJ e SJP têm índices diferentes)
+                if filial == "RJ":
+                    map_main = {"SUPER LONGA": 1, "LONGA": 2, "MÉDIA": 3, "CURTA": 4, "INTERNACIONAL": 0}
+                    map_500  = {"SUPER LONGA": 6, "LONGA": 7, "MÉDIA": 8, "CURTA": 9, "INTERNACIONAL": 5}
+                else:  # SJP
+                    map_main = {"SUPER LONGA": 2, "LONGA": 0, "MÉDIA": 3, "CURTA": 4, "INTERNACIONAL": 5}
+                    map_500  = {"SUPER LONGA": 9, "LONGA": 10, "MÉDIA": 11, "CURTA": 8, "INTERNACIONAL": 7}
 
-            q = st.text_input("Consultar frotas (ex: 203,250,314,504)", value="").strip()
-            if not q:
-                st.info("Digite uma ou mais frotas separadas por vírgula.")
-                st.stop()
+                # Campo para consultar várias frotas
+                q = st.text_input("Consultar frotas (ex: 203,250,314,504)", value="").strip()
+                if not q:
+                    st.info("Digite uma ou mais frotas separadas por vírgula.")
+                    st.stop()
 
-            parts = [p.strip() for p in q.split(",") if p.strip()]
-            wanted = []
-            for p in parts:
-                digits = re.sub(r"\D", "", p)
-                if digits:
-                    wanted.append(str(int(digits)))
+                # Normaliza lista
+                raw_parts = [p.strip() for p in q.split(",") if p.strip()]
+                wanted = []
+                for p in raw_parts:
+                    digits = re.sub(r"\D", "", p)
+                    if digits:
+                        wanted.append(str(int(digits)))
 
-            if not wanted:
-                st.warning("Nenhuma frota válida encontrada.")
-                st.stop()
+                if not wanted:
+                    st.warning("Nenhuma frota válida encontrada.")
+                    st.stop()
 
-            # pos_index[sec_idx][frota] = posição (1..N)
-            pos_index = []
-            for sec_list in orders:
-                d = {}
-                for i, f in enumerate(sec_list or [], start=1):
-                    d[str(f)] = i
-                pos_index.append(d)
+                # Índices de posição por seção:
+                # pos_index[sec_idx][frota] = posição (1..N)
+                pos_index = []
+                for sec_list in orders:
+                    d = {}
+                    for i, f in enumerate(sec_list or [], start=1):
+                        d[str(f)] = i
+                    pos_index.append(d)
 
-            def _get_pos(frota: str, col: str) -> str:
-                a = map_main.get(col)
-                b = map_500.get(col)
-                v1 = pos_index[a].get(frota, "") if a is not None and a < len(pos_index) else ""
-                v2 = pos_index[b].get(frota, "") if b is not None and b < len(pos_index) else ""
-                if v1 and v2:
-                    return f"{v1} / {v2}"
-                return v1 or v2 or ""
+                def _get_pos(frota: str, col: str) -> str:
+                    # Busca nas seções principais e nas 500 (mesma coluna)
+                    a = map_main.get(col)
+                    b = map_500.get(col)
+                    v1 = pos_index[a].get(frota, "") if a is not None and a < len(pos_index) else ""
+                    v2 = pos_index[b].get(frota, "") if b is not None and b < len(pos_index) else ""
+                    # Se existir em qualquer uma, retorna; se existir nas duas, junta "x / y"
+                    if v1 and v2:
+                        return f"{v1} / {v2}"
+                    return v1 or v2 or ""
 
-            rows = []
-            for frota in wanted:
-                row = {"FROTA": frota}
-                for col in base_cols[1:]:
-                    row[col] = _get_pos(frota, col)
-                rows.append(row)
+                rows = []
+                for frota in wanted:
+                    rec = meta.get(frota, {}) or {}
+                    row = {
+                        "FROTA": frota,
+                        "ULT. VG": rec.get("ult_viag", "NA"),
+                        "MOTORISTA": rec.get("motorista", "NA"),
+                    }
+                    for col in ["SUPER LONGA", "LONGA", "MÉDIA", "CURTA", "INTERNACIONAL"]:
+                        row[col] = _get_pos(frota, col)
+                    rows.append(row)
 
-            df = pd.DataFrame(rows, columns=base_cols)
+                df = pd.DataFrame(rows, columns=base_cols)
 
-            # Centraliza tudo e deixa cabeçalhos em negrito
-            def _center_all(_row):
-                return ["text-align: center;"] * len(df.columns)
+                # --- Estilo: títulos em negrito e tudo centralizado ---
+                def _center_all(_row):
+                    return ["text-align: center;"] * len(df.columns)
 
-            sty = (
-                df.style
-                  .apply(_center_all, axis=1)
-                  .set_table_styles([
-                      {"selector": "th", "props": [("font-weight", "800"), ("text-align", "center")]},
-                      {"selector": "td", "props": [("text-align", "center")]},
-                  ])
-            )
+                sty = (
+                    df.style
+                      .apply(_center_all, axis=1)
+                      .set_table_styles([
+                          {"selector": "th", "props": [("font-weight", "800"), ("text-align", "center")]},
+                          {"selector": "td", "props": [("text-align", "center")]},
+                      ])
+                )
 
-            st.dataframe(sty, hide_index=True, use_container_width=True)
+                st.dataframe(sty, hide_index=True, use_container_width=True)
 
-            st.download_button(
-                "Baixar consulta (CSV)",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name="consulta.csv",
-                mime="text/csv",
-            )
+                st.download_button(
+                    "Baixar consulta (CSV)",
+                    data=df.to_csv(index=False).encode("utf-8"),
+                    file_name="consulta.csv",
+                    mime="text/csv",
+                )
     with tab_select:
         st.subheader("Montagem das Filas")
         fleets_input = st.text_input("Digite as frotas separadas por vírgula")
