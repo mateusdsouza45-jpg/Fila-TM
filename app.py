@@ -97,6 +97,14 @@ hr{ border-color: rgba(255,255,255,.08); }
 </style>
 """
 
+
+# Tokens que devem ser ignorados ao limpar campos textuais durante a extração de meta (motorista/UF/município)
+STOP_TOKENS_SET = {
+    "SERVIÇO","SERVICO","PRES","SITUAÇÃO","SITUACAO","SEQ","INTERNO","FROTA","MOTORISTA",
+    "ULT","ULT.","VIAG","VIAG.","UF","MUNICIPIO","MUNICÍPIO","OBSERVAÇÕES","OBSERVACOES",
+    "TOTAL","REGISTROS","FILA","DE","CARRETEIROS","DISPONIVEL","EM","VIAGEM","SEM","MOTORISTA"
+}
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def _safe_path(filename: str) -> str:
@@ -539,7 +547,7 @@ def extract_meta_from_text(text: str, orders=None) -> dict:
 
     def _parse_date(s: str):
         try:
-            return datetime.datetime.strptime(s, "%d/%m/%Y").date()
+            return datetime.strptime(s, "%d/%m/%Y").date()
         except Exception:
             return None
 
@@ -744,7 +752,7 @@ def extract_meta_from_pdf_layout(pdf_path: str, orders=None) -> dict:
         if motorista_tokens and motorista_tokens[-1].isdigit() and len(motorista_tokens[-1]) <= 3:
             motorista_tokens = motorista_tokens[:-1]
 
-        motorista = " ".join([t for t in motorista_tokens if t not in STOP_TOKENS]).strip() or "NA"
+        motorista = " ".join([t for t in motorista_tokens if t not in STOP_TOKENS_SET]).strip() or "NA"
         data = toks[i_date] if i_date is not None else "NA"
         uf = toks[i_uf] if i_uf is not None else "NA"
 
@@ -753,7 +761,7 @@ def extract_meta_from_pdf_layout(pdf_path: str, orders=None) -> dict:
             muni_tokens = toks[i_uf+1:]
             if muni_tokens and muni_tokens[-1].isdigit() and len(muni_tokens[-1]) <= 3:
                 muni_tokens = muni_tokens[:-1]
-            municipio = " ".join([t for t in muni_tokens if t not in STOP_TOKENS]).strip() or "NA"
+            municipio = " ".join([t for t in muni_tokens if t not in STOP_TOKENS_SET]).strip() or "NA"
 
         return frota, motorista, data, uf, municipio
 
