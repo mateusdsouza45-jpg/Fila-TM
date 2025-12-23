@@ -488,121 +488,191 @@ def _extract_meta_from_section_block(block_lines: list[str], frotas_in_order: li
 
 
 def extract_meta_from_text(text: str, orders=None) -> dict:
-    """Extrai meta por frota usando o texto do pdfminer (compatível com Streamlit Community Cloud).
+    """Extrai meta (motorista + data mais recente) por frota a partir do texto do pdfminer.
 
-    Regras:
-    - Ignora 100% qualquer número no formato 999.999 / 9.999.999 etc. (interno/controle).
-    - Captura:
-        frota (2-6 dígitos), data (opcional dd/mm/aaaa), motorista, UF (opcional), município (opcional).
-    - Para cada frota, mantém a DATA MAIS RECENTE encontrada (quando existir).
-      Se uma ocorrência não tiver data, ela só preenche motorista se ainda estiver NA.
+    Objetivo: ser robusto ao PDF miner "quebrando" colunas/linhas e NÃO depender de libs extras.
 
-    Observação: o pdfminer às vezes quebra uma linha em 2-3 linhas; por isso tentamos casar
-    juntando até 3 linhas consecutivas.
+    Regras (conforme solicitado):
+    - Ignorar 100% qualquer número no formato 999.999 / 9.999.999 etc. (controle/interno com ponto).
+      Esses números NÃO entram na extração (servem apenas como delimitadores).
+    - A data (dd/mm/aaaa), quando existir, é a referência de "Últ. Viag.".
+    - Para cada frota: mantém a DATA MAIS RECENTE encontrada no PDF. O motorista associado a essa data tem prioridade.
+      Se só existir registro sem data para a frota, preenche motorista e deixa data = 'NA'.
+
+    Retorno:
+      meta[frota] = {"motorista": str, "ult_viag": "dd/mm/aaaa"|"NA", "uf": "UF"|"NA", "municipio": str|"NA"}
     """
-    meta: dict[str, dict] = {}
     if not text or len(text.strip()) < 5:
-        return meta
+        return {}
 
-    META_WITH_UF = re.compile(
-        r"^(?P<frota>\d{2,6})\s+"
-        r"(?:(?P<data>\d{2}/\d{2}/\d{4})\s+)?"
-        r"(?P<motorista>.+?)\s+"
-        r"(?P<uf>[A-Z]{2})\s+"
-        r"(?P<municipio>.+?)\s+"
-        r"(?:SIM\s+)?"
-        r"(?P<seq>\d{1,3})"
-        r"(?:\s+(?P<obs>DISPONIVEL|EM\s+VIAGEM))?\s*$",
-        re.UNICODE,
-    )
+    # --- utilidades (baseadas no seu script Fila.py) ---
+    UF_REGEX = r"^[A-Z]{2}$"
+    DATE_REGEX = r"^\d{2}/\d{2}/\d{4}$"
+    ID_REGEX = r"^\d{1,3}(?:\.\d{3})+$"  # 298.691 / 1.234.567 etc (IGNORAR)
+    SIM_TOKENS = {"SIM"}
+    SITUACAO_TOKENS = {"EM", "VIAGEM", "DISPONIVEL", "DISPONÍVEL", "DISPONIVEL", "DISPONÍVEL"}
+    UF_EXTRA = {"AR","UR","BO","RR","AM","PA","AC","RO","AP","MA","MS","MT","DF","GO","TO","SP","RJ","PR"}
 
-    META_NO_UF = re.compile(
-        r"^(?P<frota>\d{2,6})\s+"
-        r"(?:(?P<data>\d{2}/\d{2}/\d{4})\s+)?"
-        r"(?P<motorista>.+?)\s+"
-        r"(?:SIM\s+)?"
-        r"(?P<seq>\d{1,3})"
-        r"(?:\s+(?P<obs>DISPONIVEL|EM\s+VIAGEM))?\s*$",
-        re.UNICODE,
-    )
+    def clean_spaces(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "")).strip()
 
-    def _parse_date(d: str):
+    def is_date(tok: str) -> bool:
+        return bool(re.match(DATE_REGEX, tok))
+
+    def is_uf(tok: str) -> bool:
+        return bool(re.match(UF_REGEX, tok)) or tok in UF_EXTRA
+
+    def is_id(tok: str) -> bool:
+        return bool(re.match(ID_REGEX, tok))
+
+    def parse_ddmmyyyy(s: str):
         try:
-            return datetime.strptime(d, "%d/%m/%Y")
+            return datetime.strptime(s, "%d/%m/%Y")
         except Exception:
             return None
 
-    lines = [l for l in (text or "").splitlines() if (l or "").strip()]
+    # Corrige casos do tipo "ROCHA23/04/2025" (data grudada)
+    def normalize_glued_dates(s: str) -> str:
+        return re.sub(r"([A-ZÀ-Ü])(?=(\d{2}/\d{2}/\d{4}))", r"\1 ", s)
+
+    # Remove 100% os IDs com ponto (controle/interno)
+    ID_REMOVE_RE = re.compile(r"\b\d{1,3}(?:\.\d{3})+\b")
+
+    # --- reconstrução de linhas (pdfminer às vezes quebra motorista/município em linhas) ---
+    raw_lines = [clean_spaces(l) for l in text.splitlines() if clean_spaces(l)]
     i = 0
-    while i < len(lines):
-        consumed = 1
-        hit = None
-        gd = None
-
-        buf = (lines[i] or "").strip()
-        for j in range(0, 3):
-            if i + j >= len(lines):
-                break
-            if j > 0:
-                buf = (buf + " " + (lines[i + j] or "").strip()).strip()
-
-            line = buf.upper()
-
-            # separa data grudada no texto: "ROCHA23/04/2025" -> "ROCHA 23/04/2025"
-            line = re.sub(r"([A-ZÀ-Ü])(?=(\d{2}/\d{2}/\d{4}))", r"\1 ", line)
-
-            # ignora interno/controle 100%
-            line = INTERNAL_RE.sub(" ", line)
-
-            # normaliza espaços
-            line = re.sub(r"\s+", " ", line).strip()
-
-            m = META_WITH_UF.match(line) or META_NO_UF.match(line)
-            if m:
-                consumed = j + 1
-                gd = m.groupdict()
-                hit = line
-                break
-
-        if not gd:
+    merged_lines = []
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        # une com próximas linhas se:
+        # - a linha começa com frota (2-6 dígitos)
+        # - e NÃO termina com seq numérico (1-4 dígitos)
+        # - e a próxima linha NÃO começa com frota (para não colar registros diferentes)
+        if re.match(r"^\d{2,6}\b", line) and not re.search(r"\b\d{1,4}\s*$", line):
+            buff = [line]
+            j = i + 1
+            # une até 2 linhas extras no máximo (suficiente p/ nomes quebrados)
+            while j < len(raw_lines) and len(buff) < 3 and not re.match(r"^\d{2,6}\b", raw_lines[j]):
+                buff.append(raw_lines[j])
+                j += 1
+            merged_lines.append(clean_spaces(" ".join(buff)))
+            i = j
+        else:
+            merged_lines.append(line)
             i += 1
+
+    meta: dict[str, dict] = {}
+
+    for raw in merged_lines:
+        line = normalize_glued_dates(raw.upper())
+        # remove IDs com ponto (controle/interno) 100%
+        line = ID_REMOVE_RE.sub(" ", line)
+        line = clean_spaces(line)
+
+        if not line:
             continue
 
-        frota = (gd.get("frota") or "").strip()
-        try:
-            frota = str(int(re.sub(r"\D", "", frota)))
-        except Exception:
-            i += consumed
+        tokens = line.split()
+        if not tokens:
             continue
 
-        motorista = re.sub(r"\s+", " ", (gd.get("motorista") or "").strip()) or "NA"
-        data = (gd.get("data") or "").strip() or "NA"
-        uf = (gd.get("uf") or "").strip() or "NA"
-        municipio = re.sub(r"\s+", " ", (gd.get("municipio") or "").strip()) or "NA"
+        # precisa começar com frota (2-6 dígitos)
+        if not re.match(r"^\d{2,6}$", tokens[0]):
+            continue
+
+        frota = str(int(tokens[0]))
+        # Se orders foi passado, opcionalmente filtra para frotas que existem no PDF da fila
+        if orders is not None:
+            try:
+                # cria um set rápido uma vez (cache simples em atributo da função)
+                if not hasattr(extract_meta_from_text, "_orders_set_cache") or extract_meta_from_text._orders_set_cache_src is not orders:
+                    s = set()
+                    for sec in orders:
+                        for f in (sec or []):
+                            s.add(str(int(str(f))))
+                    extract_meta_from_text._orders_set_cache = s
+                    extract_meta_from_text._orders_set_cache_src = orders
+                if frota not in extract_meta_from_text._orders_set_cache:
+                    # pula ruído/linhas que por acaso começam com número
+                    continue
+            except Exception:
+                pass
+
+        idx = 1
+
+        data = "NA"
+        if idx < len(tokens) and is_date(tokens[idx]):
+            data = tokens[idx]
+            idx += 1
+
+        # motorista: até encontrar UF / seq final / SIM / situação
+        motorista_tokens = []
+        while idx < len(tokens):
+            t = tokens[idx]
+            # delimitadores
+            if is_uf(t) or t in SIM_TOKENS:
+                break
+            if is_date(t):
+                break
+            # não parar no número de seq aqui; vamos tratar mais abaixo
+            if re.match(r"^\d{1,4}$", t):
+                # se isso for o último token, é seq; então para
+                if idx == len(tokens) - 1:
+                    break
+            # situação inline pode aparecer como 2 tokens "EM" "VIAGEM"
+            if t in SITUACAO_TOKENS:
+                break
+
+            motorista_tokens.append(t)
+            idx += 1
+
+        motorista = clean_spaces(" ".join(motorista_tokens)) or "NA"
+
+        uf = "NA"
+        municipio = "NA"
+
+        # UF + município (quando existir)
+        if idx < len(tokens) and is_uf(tokens[idx]):
+            uf = tokens[idx]
+            idx += 1
+            mun_tokens = []
+            while idx < len(tokens):
+                t = tokens[idx]
+                # seq normalmente no final
+                if re.match(r"^\d{1,4}$", t) and idx == len(tokens) - 1:
+                    break
+                if t in SIM_TOKENS:
+                    break
+                if t in SITUACAO_TOKENS:
+                    break
+                mun_tokens.append(t)
+                idx += 1
+            municipio = clean_spaces(" ".join(mun_tokens)) or "NA"
+
+        # Atualiza meta (mantendo data mais recente)
+        new_dt = parse_ddmmyyyy(data) if data != "NA" else None
 
         if frota not in meta:
             meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
+            continue
+
+        old_data = meta[frota].get("ult_viag", "NA") or "NA"
+        old_dt = parse_ddmmyyyy(old_data) if old_data != "NA" else None
+
+        if new_dt and (not old_dt or new_dt > old_dt):
+            meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
         else:
-            old = meta[frota] or {}
-            old_date = (old.get("ult_viag") or "NA").strip()
-
-            new_dt = _parse_date(data) if data != "NA" else None
-            old_dt = _parse_date(old_date) if old_date != "NA" else None
-
-            if new_dt and (old_dt is None or new_dt > old_dt):
-                meta[frota] = {"motorista": motorista, "ult_viag": data, "uf": uf, "municipio": municipio}
-            else:
-                if (old.get("motorista") in (None, "", "NA")) and motorista not in ("", "NA"):
-                    old["motorista"] = motorista
-                if (old.get("uf") in (None, "", "NA")) and uf not in ("", "NA"):
-                    old["uf"] = uf
-                if (old.get("municipio") in (None, "", "NA")) and municipio not in ("", "NA"):
-                    old["municipio"] = municipio
-                meta[frota] = old
-
-        i += consumed
+            # se ainda não temos motorista, preenche pelo menos o motorista
+            if (meta[frota].get("motorista") in (None, "", "NA")) and motorista not in (None, "", "NA"):
+                meta[frota]["motorista"] = motorista
+            # se não tem UF/Município, tenta preencher
+            if meta[frota].get("uf") in (None, "", "NA") and uf not in (None, "", "NA"):
+                meta[frota]["uf"] = uf
+            if meta[frota].get("municipio") in (None, "", "NA") and municipio not in (None, "", "NA"):
+                meta[frota]["municipio"] = municipio
 
     return meta
+
 def history_append(event: dict):
     """Salva histórico por usuário (privado)."""
     username = (event.get("user") or "anon")
@@ -833,7 +903,7 @@ def extract_rj_from_uploaded_pdf(uploaded_pdf):
         text_orders = extract_text(tmp_path)
         orders = extract_orders_rj_from_text(text_orders)
         # META: extração compatível com Streamlit Cloud (pdfminer + regex robusto)
-        meta = extract_meta_from_text(text_orders)
+        meta = extract_meta_from_text(text_orders, orders=orders)
         return orders, meta
     finally:
         try:
@@ -1003,7 +1073,7 @@ def extract_sjp_from_uploaded_pdf(uploaded_pdf):
         text_orders = extract_text(tmp_path)
         orders = extract_orders_sjp_from_text(text_orders)
         # META: extração compatível com Streamlit Cloud (pdfminer + regex robusto)
-        meta = extract_meta_from_text(text_orders)
+        meta = extract_meta_from_text(text_orders, orders=orders)
         return orders, meta
     finally:
         try:
